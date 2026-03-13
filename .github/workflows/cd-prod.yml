@@ -1,0 +1,71 @@
+name: CD Prod
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_ref:
+        description: Immutable GHCR image reference (digest recommended)
+        required: true
+        type: string
+  release:
+    types:
+      - published
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  deploy-prod:
+    runs-on: ubuntu-latest
+    environment:
+      name: prod
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve image reference
+        id: image
+        run: |
+          if [ '${{ github.event_name }}' = 'workflow_dispatch' ]; then
+            echo 'ref=${{ inputs.image_ref }}' >> "$GITHUB_OUTPUT"
+          else
+            echo 'ref=ghcr.io/${{ github.repository }}:${{ github.event.release.tag_name }}' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Copy deployment assets
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.PROD_SSH_HOST }}
+          username: ${{ secrets.PROD_SSH_USER }}
+          key: ${{ secrets.PROD_SSH_KEY }}
+          source: deploy/compose/*
+          target: ${{ secrets.PROD_DEPLOY_PATH }}
+          strip_components: 2
+
+      - name: Deploy on prod host
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.PROD_SSH_HOST }}
+          username: ${{ secrets.PROD_SSH_USER }}
+          key: ${{ secrets.PROD_SSH_KEY }}
+          script: |
+            set -eu
+            export APP_IMAGE='${{ steps.image.outputs.ref }}'
+            echo '${{ secrets.GHCR_READ_TOKEN }}' | docker login ghcr.io -u '${{ secrets.GHCR_READ_USER }}' --password-stdin
+            cd '${{ secrets.PROD_DEPLOY_PATH }}'
+            docker compose -f compose.yml -f compose.prod.yml pull
+            docker compose -f compose.yml -f compose.prod.yml run --rm -e APP_MIGRATE_ON_START=1 bot true
+            docker compose -f compose.yml -f compose.prod.yml up -d --remove-orphans
+            docker image prune -f
+
+      - name: Prod smoke check
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.PROD_SSH_HOST }}
+          username: ${{ secrets.PROD_SSH_USER }}
+          key: ${{ secrets.PROD_SSH_KEY }}
+          script: |
+            set -eu
+            cd '${{ secrets.PROD_DEPLOY_PATH }}'
+            docker compose -f compose.yml -f compose.prod.yml ps

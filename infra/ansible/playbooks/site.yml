@@ -1,0 +1,8 @@
+- name: Bootstrap tea party VPS
+  hosts: all
+  become: true
+  roles:
+    - common
+    - docker_host
+    - backup
+    - monitoring

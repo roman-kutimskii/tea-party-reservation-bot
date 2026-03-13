@@ -1,0 +1,20 @@
+services:
+  bot:
+    build:
+      context: ../../
+      dockerfile: Dockerfile
+    env_file:
+      - ./env/local.env
+
+  worker:
+    build:
+      context: ../../
+      dockerfile: Dockerfile
+    env_file:
+      - ./env/local.env
+
+  postgres:
+    env_file:
+      - ./env/postgres.env
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"

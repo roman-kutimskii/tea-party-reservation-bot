@@ -1,0 +1,23 @@
+services:
+  bot:
+    pull_policy: always
+    env_file:
+      - ./env/prod.env
+      - ./env/prod.secrets.env
+    labels:
+      com.tea-party.environment: prod
+
+  worker:
+    pull_policy: always
+    env_file:
+      - ./env/prod.env
+      - ./env/prod.secrets.env
+    labels:
+      com.tea-party.environment: prod
+
+  postgres:
+    env_file:
+      - ./env/prod.env
+      - ./env/prod.secrets.env
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"

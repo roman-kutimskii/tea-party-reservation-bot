@@ -1,0 +1,22 @@
+timezone: Europe/Moscow
+deploy_user: deploy
+deploy_group: deploy
+deploy_root: /opt/tea-party-reservation-bot
+compose_dir: "{{ deploy_root }}/compose"
+env_dir: "{{ deploy_root }}/env"
+backup_root: /srv/tea-party-reservation-bot/backups
+monitoring_allowed_cidrs: []
+ufw_allowed_ssh_cidrs:
+  - 0.0.0.0/0
+app_service_name: tea-party-compose.service
+restic_repository: s3:https://s3.example.invalid/tea-party
+restic_password: change-me
+restic_environment:
+  AWS_ACCESS_KEY_ID: replace-me
+  AWS_SECRET_ACCESS_KEY: replace-me
+  AWS_DEFAULT_REGION: eu-central-1
+postgres_backup_db: tea_party_prod
+postgres_backup_user: tea_party_prod
+postgres_backup_password: replace-me
+postgres_backup_host: 127.0.0.1
+postgres_backup_port: 5432

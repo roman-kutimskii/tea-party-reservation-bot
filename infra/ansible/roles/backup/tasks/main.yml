@@ -1,0 +1,55 @@
+- name: Install backup environment file
+  ansible.builtin.template:
+    src: backup.env.j2
+    dest: /etc/tea-party-backup.env
+    owner: root
+    group: root
+    mode: '0600'
+
+- name: Install backup script
+  ansible.builtin.template:
+    src: tea-party-backup.sh.j2
+    dest: /usr/local/bin/tea-party-backup.sh
+    owner: root
+    group: root
+    mode: '0750'
+
+- name: Install backup systemd service
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/tea-party-backup.service
+    mode: '0644'
+    content: |
+      [Unit]
+      Description=Tea Party PostgreSQL backup
+      After=network-online.target docker.service
+
+      [Service]
+      Type=oneshot
+      EnvironmentFile=/etc/tea-party-backup.env
+      ExecStart=/usr/local/bin/tea-party-backup.sh
+
+      [Install]
+      WantedBy=multi-user.target
+  notify: Reload systemd
+
+- name: Install backup timer
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/tea-party-backup.timer
+    mode: '0644'
+    content: |
+      [Unit]
+      Description=Run Tea Party backup every day
+
+      [Timer]
+      OnCalendar=*-*-* 03:30:00
+      Persistent=true
+
+      [Install]
+      WantedBy=timers.target
+  notify: Reload systemd
+
+- name: Ensure backup timer is enabled
+  ansible.builtin.service:
+    name: tea-party-backup.timer
+    enabled: true
+    state: started

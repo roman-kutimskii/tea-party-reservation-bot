@@ -1,0 +1,20 @@
+environment = "prod"
+location    = "fsn1"
+server_type = "cpx31"
+volume_size_gb = 80
+
+ssh_allowed_cidrs = [
+  "203.0.113.10/32",
+]
+
+monitoring_allowed_cidrs = [
+  "203.0.113.20/32",
+]
+
+ssh_public_keys = {
+  operator = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIreplace-me operator@example"
+}
+
+labels = {
+  owner = "ops"
+}

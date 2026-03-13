@@ -1,0 +1,19 @@
+- name: Install node exporter
+  ansible.builtin.apt:
+    name: prometheus-node-exporter
+    state: present
+
+- name: Enable node exporter
+  ansible.builtin.service:
+    name: prometheus-node-exporter
+    enabled: true
+    state: started
+
+- name: Allow node exporter from monitoring CIDRs
+  community.general.ufw:
+    rule: allow
+    port: '9100'
+    proto: tcp
+    src: "{{ item }}"
+  loop: "{{ monitoring_allowed_cidrs }}"
+  when: monitoring_allowed_cidrs | length > 0

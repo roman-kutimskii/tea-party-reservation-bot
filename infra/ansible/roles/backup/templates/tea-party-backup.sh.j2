@@ -1,0 +1,15 @@
+#!/bin/sh
+set -eu
+
+STAMP="$(date +%Y%m%d-%H%M%S)"
+BACKUP_DIR="{{ backup_root }}"
+DUMP_FILE="${BACKUP_DIR}/postgres-${STAMP}.dump"
+
+mkdir -p "$BACKUP_DIR"
+pg_dump --format=custom --file "$DUMP_FILE"
+
+restic snapshots >/dev/null 2>&1 || restic init
+restic backup "$DUMP_FILE" "$BACKUP_DIR"
+restic forget --keep-daily 7 --keep-weekly 4 --keep-monthly 6 --prune
+
+find "$BACKUP_DIR" -type f -name 'postgres-*.dump' -mtime +2 -delete

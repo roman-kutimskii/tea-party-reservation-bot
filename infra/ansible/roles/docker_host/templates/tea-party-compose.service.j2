@@ -1,0 +1,16 @@
+[Unit]
+Description=Tea Party Reservation Bot Compose Stack
+After=docker.service network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory={{ compose_dir }}
+EnvironmentFile=-{{ env_dir }}/app.env
+ExecStart=/usr/bin/docker compose -f {{ compose_dir }}/compose.yml -f {{ compose_dir }}/compose.prod.yml up -d --remove-orphans
+ExecStop=/usr/bin/docker compose -f {{ compose_dir }}/compose.yml -f {{ compose_dir }}/compose.prod.yml down
+TimeoutStartSec=0
+
+[Install]
+WantedBy=multi-user.target

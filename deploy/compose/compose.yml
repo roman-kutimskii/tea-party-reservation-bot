@@ -1,0 +1,56 @@
+name: tea-party-reservation-bot
+
+x-app-service: &app-service
+  image: ${APP_IMAGE:-ghcr.io/example/tea-party-reservation-bot:latest}
+  restart: unless-stopped
+  networks:
+    - backend
+  depends_on:
+    postgres:
+      condition: service_healthy
+  logging:
+    driver: json-file
+    options:
+      max-size: 10m
+      max-file: "5"
+
+services:
+  bot:
+    <<: *app-service
+    command: ["/bin/sh", "-lc", "${BOT_APP_COMMAND:-python -m tea_party_reservation_bot bot}"]
+    environment:
+      APP_MIGRATE_ON_START: ${BOT_MIGRATE_ON_START:-1}
+    labels:
+      com.tea-party.role: bot
+
+  worker:
+    <<: *app-service
+    command: ["/bin/sh", "-lc", "${WORKER_APP_COMMAND:-python -m tea_party_reservation_bot worker}"]
+    environment:
+      APP_MIGRATE_ON_START: ${WORKER_MIGRATE_ON_START:-0}
+    labels:
+      com.tea-party.role: worker
+
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    networks:
+      - backend
+    environment:
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+networks:
+  backend:
+    driver: bridge
+
+volumes:
+  postgres_data:
+    name: ${COMPOSE_PROJECT_NAME:-tea-party-reservation-bot}_postgres_data
