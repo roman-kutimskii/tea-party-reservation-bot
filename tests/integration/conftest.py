@@ -1,0 +1,123 @@
+from __future__ import annotations
+
+from collections.abc import AsyncIterator, Callable, Iterator
+
+import pytest
+import pytest_asyncio
+from alembic import command
+from alembic.config import Config
+from sqlalchemy import select, text
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from testcontainers.postgres import PostgresContainer
+
+from tea_party_reservation_bot.application.dto import TelegramProfile
+from tea_party_reservation_bot.application.security import DomainAuthorizationService
+from tea_party_reservation_bot.application.services import (
+    AdminAccessService,
+    EventPersistenceService,
+    EventQueryService,
+    NotificationPreferenceService,
+    PublicationService,
+    RegistrationService,
+    SystemClock,
+    UserApplicationService,
+)
+from tea_party_reservation_bot.config.settings import DatabaseSettings
+from tea_party_reservation_bot.infrastructure.db import create_session_factory
+from tea_party_reservation_bot.infrastructure.db.models import RoleAssignmentModel, RoleModel
+from tea_party_reservation_bot.infrastructure.db.uow import SqlAlchemyUnitOfWork
+
+
+def _async_dsn(container: PostgresContainer) -> str:
+    dsn = container.get_connection_url()
+    return dsn.replace("+psycopg2", "+psycopg")
+
+
+@pytest.fixture(scope="session")
+def postgres_dsn() -> Iterator[str]:
+    with PostgresContainer("postgres:16-alpine") as container:
+        yield _async_dsn(container)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def apply_migrations(postgres_dsn: str) -> None:
+    config = Config()
+    config.set_main_option(
+        "script_location",
+        "src/tea_party_reservation_bot/infrastructure/db/migrations",
+    )
+    config.set_main_option("sqlalchemy.url", postgres_dsn)
+    command.upgrade(config, "head")
+
+
+@pytest_asyncio.fixture
+async def session_factory(postgres_dsn: str) -> AsyncIterator[async_sessionmaker[AsyncSession]]:
+    factory = create_session_factory(DatabaseSettings(dsn=postgres_dsn, echo=False))
+    yield factory
+    bind = factory.kw.get("bind")
+    if bind is not None:
+        await bind.dispose()
+
+
+@pytest_asyncio.fixture
+async def db_cleanup(session_factory: async_sessionmaker[AsyncSession]) -> AsyncIterator[None]:
+    async with session_factory() as session:
+        for table in [
+            "admin_audit_log",
+            "outbox_events",
+            "processed_commands",
+            "reservations",
+            "waitlist_entries",
+            "publication_batch_events",
+            "event_occurrences",
+            "publication_batches",
+            "notification_preferences",
+            "role_assignments",
+            "users",
+        ]:
+            await session.execute(text(f"TRUNCATE TABLE {table} RESTART IDENTITY CASCADE"))
+        await session.commit()
+    yield
+
+
+@pytest.fixture
+def uow_factory(
+    session_factory: async_sessionmaker[AsyncSession], db_cleanup: None
+) -> Callable[[], SqlAlchemyUnitOfWork]:
+    return lambda: SqlAlchemyUnitOfWork(session_factory)
+
+
+@pytest_asyncio.fixture
+async def seed_admin(session_factory: async_sessionmaker[AsyncSession], db_cleanup: None) -> None:
+    user_service = UserApplicationService(lambda: SqlAlchemyUnitOfWork(session_factory))
+    admin = await user_service.ensure_user(
+        TelegramProfile(
+            telegram_user_id=1000,
+            username="owner",
+            first_name="Owner",
+            last_name=None,
+        )
+    )
+    async with session_factory() as session:
+        role_id = await session.scalar(select(RoleModel.id).where(RoleModel.code == "owner"))
+        if role_id is None:
+            raise AssertionError("owner role not found")
+        session.add(RoleAssignmentModel(user_id=admin.id, role_id=role_id))
+        await session.commit()
+
+
+@pytest.fixture
+def services(
+    uow_factory: Callable[[], SqlAlchemyUnitOfWork], seed_admin: None
+) -> dict[str, object]:
+    auth = DomainAuthorizationService()
+    clock = SystemClock()
+    return {
+        "user": UserApplicationService(uow_factory),
+        "admin_access": AdminAccessService(uow_factory),
+        "events": EventPersistenceService(uow_factory, auth, "Europe/Moscow"),
+        "publication": PublicationService(uow_factory, auth, clock),
+        "query": EventQueryService(uow_factory, auth, clock),
+        "notifications": NotificationPreferenceService(uow_factory),
+        "registration": RegistrationService(uow_factory, clock, auth),
+    }

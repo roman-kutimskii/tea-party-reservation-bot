@@ -1,0 +1,229 @@
+from __future__ import annotations
+
+import asyncio
+from datetime import UTC, datetime, timedelta
+from typing import cast
+
+import pytest
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+from tea_party_reservation_bot.application.dto import TelegramProfile
+from tea_party_reservation_bot.application.services import (
+    AdminAccessService,
+    EventPersistenceService,
+    EventQueryService,
+    NotificationPreferenceService,
+    PublicationService,
+    RegistrationResult,
+    RegistrationService,
+    UserApplicationService,
+)
+from tea_party_reservation_bot.domain.enums import CancelDeadlineSource, EventStatus
+from tea_party_reservation_bot.domain.events import EventDraft
+from tea_party_reservation_bot.exceptions import ConflictError
+from tea_party_reservation_bot.infrastructure.db.models import (
+    EventOccurrenceModel,
+    OutboxEventModel,
+    ProcessedCommandModel,
+    ReservationModel,
+    WaitlistEntryModel,
+)
+
+
+async def _create_published_event(
+    services: dict[str, object],
+    *,
+    capacity: int,
+    starts_at: datetime | None = None,
+) -> int:
+    admin_access = cast(AdminAccessService, services["admin_access"])
+    event_service = cast(EventPersistenceService, services["events"])
+    publication_service = cast(PublicationService, services["publication"])
+
+    actor = await admin_access.load_actor(1000)
+    start = starts_at or datetime.now(tz=UTC) + timedelta(days=3)
+    draft = EventDraft(
+        tea_name="Да Хун Пао",
+        description="Вечерняя дегустация",
+        starts_at_local=start,
+        starts_at_utc=start,
+        capacity=capacity,
+        cancel_deadline_source=CancelDeadlineSource.DEFAULT,
+        cancel_deadline_at_local=start - timedelta(hours=4),
+        cancel_deadline_at_utc=start - timedelta(hours=4),
+    )
+    saved = await event_service.save_drafts(actor, [draft])
+    requested = await publication_service.request_single_event_publication(
+        actor=actor,
+        event_id=saved.event_ids[0],
+        idempotency_key=f"publish-{saved.event_ids[0]}",
+    )
+    await publication_service.mark_publication_succeeded(
+        batch_id=requested.batch_id or 0,
+        event_ids=list(requested.event_ids),
+        chat_id=-100123,
+        message_id=999,
+    )
+    return saved.event_ids[0]
+
+
+@pytest.mark.asyncio
+async def test_registration_is_idempotent(
+    services: dict[str, object], session_factory: async_sessionmaker[AsyncSession]
+) -> None:
+    event_id = await _create_published_event(services, capacity=1)
+    registration_service = cast(RegistrationService, services["registration"])
+    profile = TelegramProfile(
+        telegram_user_id=2001, username="guest", first_name="Guest", last_name=None
+    )
+
+    first = await registration_service.register(
+        profile=profile,
+        event_id=event_id,
+        idempotency_key="reg-1",
+    )
+    second = await registration_service.register(
+        profile=profile,
+        event_id=event_id,
+        idempotency_key="reg-1",
+    )
+
+    assert first == second
+    assert first.outcome == "confirmed"
+
+    async with session_factory() as session:
+        reservation_count = await session.scalar(select(func.count()).select_from(ReservationModel))
+        processed_count = await session.scalar(
+            select(func.count()).select_from(ProcessedCommandModel)
+        )
+        assert reservation_count == 1
+        assert processed_count == 2
+
+
+@pytest.mark.asyncio
+async def test_cancellation_promotes_waitlist_entry(
+    services: dict[str, object], session_factory: async_sessionmaker[AsyncSession]
+) -> None:
+    event_id = await _create_published_event(services, capacity=1)
+    registration_service = cast(RegistrationService, services["registration"])
+    query_service = cast(EventQueryService, services["query"])
+
+    await registration_service.register(
+        profile=TelegramProfile(
+            telegram_user_id=3001, username="u1", first_name="One", last_name=None
+        ),
+        event_id=event_id,
+        idempotency_key="reg-a",
+    )
+    waitlisted = await registration_service.register(
+        profile=TelegramProfile(
+            telegram_user_id=3002, username="u2", first_name="Two", last_name=None
+        ),
+        event_id=event_id,
+        idempotency_key="reg-b",
+    )
+
+    assert waitlisted.outcome == "waitlisted"
+
+    cancelled = await registration_service.cancel(
+        telegram_user_id=3001,
+        event_id=event_id,
+        idempotency_key="cancel-a",
+    )
+    registrations = await query_service.list_user_active_registrations(3002)
+
+    assert cancelled.promoted_user_id is not None
+    assert len(registrations) == 1
+    assert registrations[0].event_id == event_id
+
+    async with session_factory() as session:
+        event = await session.get(EventOccurrenceModel, event_id)
+        waitlist_statuses = (
+            (await session.execute(select(WaitlistEntryModel.status))).scalars().all()
+        )
+        outbox_types = (await session.execute(select(OutboxEventModel.event_type))).scalars().all()
+        assert event is not None
+        assert event.reserved_seats == 1
+        assert event.status == EventStatus.PUBLISHED_FULL
+        assert waitlist_statuses == ["promoted"]
+        assert "waitlist.promoted" in outbox_types
+
+
+@pytest.mark.asyncio
+async def test_parallel_last_seat_allocation_results_in_one_confirmed_and_one_waitlisted(
+    services: dict[str, object], session_factory: async_sessionmaker[AsyncSession]
+) -> None:
+    event_id = await _create_published_event(services, capacity=1)
+    registration_service = cast(RegistrationService, services["registration"])
+
+    async def register(profile: TelegramProfile, key: str) -> RegistrationResult:
+        return await registration_service.register(
+            profile=profile, event_id=event_id, idempotency_key=key
+        )
+
+    results = await asyncio.gather(
+        register(
+            TelegramProfile(telegram_user_id=4001, username="u1", first_name="One", last_name=None),
+            "k1",
+        ),
+        register(
+            TelegramProfile(telegram_user_id=4002, username="u2", first_name="Two", last_name=None),
+            "k2",
+        ),
+    )
+
+    outcomes = sorted(result.outcome for result in results)
+    assert outcomes == ["confirmed", "waitlisted"]
+
+    async with session_factory() as session:
+        event = await session.get(EventOccurrenceModel, event_id)
+        confirmed = await session.scalar(
+            select(func.count())
+            .select_from(ReservationModel)
+            .where(ReservationModel.status == "confirmed")
+        )
+        waitlisted = await session.scalar(
+            select(func.count())
+            .select_from(WaitlistEntryModel)
+            .where(WaitlistEntryModel.status == "active")
+        )
+        assert event is not None
+        assert event.reserved_seats == 1
+        assert confirmed == 1
+        assert waitlisted == 1
+
+
+@pytest.mark.asyncio
+async def test_notification_preferences_and_admin_roles(
+    services: dict[str, object],
+) -> None:
+    user_service = cast(UserApplicationService, services["user"])
+    admin_access = cast(AdminAccessService, services["admin_access"])
+    notification_service = cast(NotificationPreferenceService, services["notifications"])
+
+    await user_service.ensure_user(
+        TelegramProfile(telegram_user_id=5001, username=None, first_name="User", last_name=None)
+    )
+    prefs = await notification_service.set_new_events_enabled(5001, True)
+    actor = await admin_access.load_actor(1000)
+
+    assert prefs.new_events_enabled is True
+    assert "owner" in {role.value for role in actor.roles.roles}
+
+
+@pytest.mark.asyncio
+async def test_duplicate_registration_with_new_idempotency_key_is_rejected(
+    services: dict[str, object],
+) -> None:
+    event_id = await _create_published_event(services, capacity=2)
+    registration_service = cast(RegistrationService, services["registration"])
+    profile = TelegramProfile(
+        telegram_user_id=6001, username="repeat", first_name="Repeat", last_name=None
+    )
+
+    await registration_service.register(profile=profile, event_id=event_id, idempotency_key="first")
+    with pytest.raises(ConflictError, match="активная запись"):
+        await registration_service.register(
+            profile=profile, event_id=event_id, idempotency_key="second"
+        )
