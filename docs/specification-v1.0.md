@@ -12,7 +12,7 @@
 
 This document is the source of truth for building a Telegram bot for a single-location Chinese tea house that publishes tasting events and accepts registrations directly through Telegram.
 
-The system must let administrators create one or more event drafts from structured text, validate and preview them, require explicit confirmation, and publish them to a Telegram channel. Visitors must be able to register for specific events through the bot, receive immediate confirmation when seats are available, join a waitlist when events are full, cancel before the allowed deadline, and optionally subscribe to announcements about newly published tastings.
+The system must let administrators create one or more event drafts from structured text, validate and preview them, require explicit confirmation, and publish them to a Telegram group. Visitors must be able to register for specific events through the bot, receive immediate confirmation when seats are available, join a waitlist when events are full, cancel before the allowed deadline, and optionally subscribe to announcements about newly published tastings.
 
 The system must be production-ready, maintainable, typed, testable, and deployable on a plain VPS with Docker, using Python 3.14, aiogram 3, and PostgreSQL.
 
@@ -42,7 +42,7 @@ The most critical technical guarantee is anti-overbooking under concurrent sign-
 - Registration Manager
   - Manages participant lists and operational registration changes.
 - Event Manager
-  - Creates drafts, edits events, publishes channel posts, manages registrations.
+  - Creates drafts, edits events, publishes group announcement posts, manages registrations.
 - Owner
   - Full permissions, including admin role management and configuration.
 
@@ -66,7 +66,7 @@ Extended production-ready role model for future growth:
 | View events and participants | Yes | Yes | Yes | Yes |
 | Create event draft | Yes | Yes | No | No |
 | Edit draft before publish | Yes | Yes | No | No |
-| Publish to channel | Yes | Yes | No | No |
+| Publish to group | Yes | Yes | No | No |
 | Create weekly batch post | Yes | Yes | No | No |
 | Edit published event | Yes | Yes | Limited | No |
 | Open or close registration | Yes | Yes | Limited | No |
@@ -90,7 +90,7 @@ Notes:
 - Admins can create valid event drafts from structured text.
 - Publication requires explicit admin confirmation.
 - The bot can publish either a single-event post or a multi-event weekly batch post.
-- Each published event can be opened from the channel post and registered for individually.
+- Each published event can be opened from the group post and registered for individually.
 - Confirmed registrations never exceed event capacity, including under concurrency.
 - Full events offer a waitlist.
 - Users can cancel before the effective cancellation deadline.
@@ -101,7 +101,7 @@ Notes:
 
 - One Telegram bot.
 - One tea house location.
-- One Telegram channel for publication.
+- One Telegram group for publication and announcement posting.
 - Russian-only bot UX.
 - Multiple admins with roles.
 - Structured admin event input.
@@ -150,7 +150,7 @@ Notes:
 
 ### 3.2 Visitor Flows
 
-- Visitor starts bot with `/start` or event deep link from channel post.
+- Visitor starts bot with `/start` or event deep link from group post.
 - Visitor sees event details and can register.
 - Visitor receives immediate status:
   - confirmed; or
@@ -208,16 +208,17 @@ Notes:
 - Subscription model for MVP:
   - one global on/off switch for new tasting announcements.
 
-### 3.7 Channel Posting Flow
+### 3.7 Group Posting Flow
 
 - Bot supports:
-  - standalone single-event channel post;
-  - weekly batch channel post containing several events.
-- Weekly batch post format:
+  - standalone single-event group post;
+  - weekly batch group post containing several events.
+- Weekly batch group post format:
   - one combined text post;
   - clearly separated event blocks;
   - one distinct registration button per event.
 - Each button must open the bot for the exact event it belongs to.
+- Group publication is announcement-only; registration itself happens in the bot private chat, not inside the group thread.
 - Publication requires explicit admin confirmation.
 - If single-event publication fails, the event remains unpublished.
 - If batch publication fails, none of the included events become published.
@@ -240,7 +241,7 @@ Notes:
 - Event edited after users already registered.
 - Admin reduces capacity below already confirmed seats.
 - User blocks bot after registering.
-- Channel posting rights are missing or lost.
+- Group posting rights are missing or lost.
 - Invalid structured admin input.
 - Registration attempt after event start.
 - Cancellation attempt after deadline.
@@ -453,6 +454,15 @@ Main components:
 - optional `caddy`
   - reverse proxy and TLS if webhooks are used.
 
+Telegram group capability assumptions:
+
+- The bot must be added to the target Telegram group.
+- The bot must have sufficient rights to publish announcement messages in that group.
+- The bot must be able to attach inline buttons or deep links to published group posts.
+- The design must not rely on users interacting with the bot inside the group chat itself.
+- Users are expected to open the bot from post buttons or deep links and complete registration in private chat with the bot.
+- Group messages are announcement entry points, not the source of truth for registrations.
+
 ### 6.3 PostgreSQL Usage and Rationale
 
 PostgreSQL is the single source of truth for:
@@ -566,21 +576,21 @@ Promotion transaction:
   - `cancel_deadline_source` as `default` or `override`.
 - Runtime logic always checks persisted `cancel_deadline_at` rather than recomputing it later.
 
-### 6.10 Channel Publishing Workflow
+### 6.10 Group Publishing Workflow
 
 Single event publication:
 
 1. Validate draft.
 2. Save publish intent and outbox event in one transaction.
-3. Worker sends channel post.
-4. On success, event becomes `published_open` and stores Telegram message metadata.
+3. Worker sends group announcement post.
+4. On success, event becomes `published_open` and stores Telegram group message metadata.
 
 Batch publication:
 
 1. Validate all selected drafts.
 2. Create `publication_batch` and link included events in one transaction.
 3. Save outbox publish event.
-4. Worker sends one combined channel post with clearly separated event blocks.
+4. Worker sends one combined group post with clearly separated event blocks.
 5. Worker attaches one distinct registration button per event.
 6. On success, all included events become `published_open`.
 7. On failure, none of the included events become published.
@@ -647,8 +657,8 @@ Batch publication:
 - `cancel_deadline_source` text not null
 - `status` text not null
 - `publication_batch_id` FK nullable
-- `telegram_channel_chat_id` bigint nullable
-- `telegram_channel_message_id` bigint nullable
+- `telegram_group_chat_id` bigint nullable
+- `telegram_group_message_id` bigint nullable
 - `created_by_user_id` FK
 - `published_at` timestamptz nullable
 - `created_at`
@@ -659,8 +669,8 @@ Batch publication:
 - `id` PK
 - `period_label` text nullable
 - `status` text not null
-- `telegram_channel_chat_id` bigint nullable
-- `telegram_channel_message_id` bigint nullable
+- `telegram_group_chat_id` bigint nullable
+- `telegram_group_message_id` bigint nullable
 - `created_by_user_id` FK
 - `published_at` timestamptz nullable
 - `created_at`
@@ -933,7 +943,7 @@ Containers:
 
 ### 11.5 Operational Smoke Checks
 
-- Publish test batch to staging channel.
+- Publish test batch to staging group.
 - Open each event via deep link.
 - Register until full.
 - Waitlist next user.
@@ -965,7 +975,7 @@ Containers:
 ### 13.1 Key Risks
 
 - Managers continue side-channel registration outside the bot.
-- Channel permissions are misconfigured.
+- Group permissions are misconfigured.
 - Event edits after publication create user confusion if notifications are weak.
 - Batch formatting mistakes create wrong event-to-button mapping.
 
@@ -976,7 +986,7 @@ Containers:
 - Waitlist is automatic and promoted automatically.
 - Waitlist is enabled by default for all MVP events.
 - New-event notifications are global on/off only.
-- Channel post uses one combined text post for weekly batch publication.
+- Group post uses one combined text post for weekly batch publication.
 - Weekly batch post contains clearly separated event blocks and one distinct button per event.
 - Cancellation deadline uses system default in MVP with optional per-event override.
 - Registration remains event-specific even in batch posts.
@@ -987,6 +997,7 @@ Containers:
 - One location and one primary timezone are used consistently.
 - Registration closes no later than event start unless a later requirement adds a separate registration-close field.
 - Long polling is acceptable for MVP deployment.
+- The Telegram group is used for announcement posts, while all actual registration actions happen in private chat with the bot.
 
 ## 14. Phased Implementation Plan
 
