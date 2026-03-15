@@ -12,6 +12,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from tea_party_reservation_bot.application.contracts import UnitOfWork
 from tea_party_reservation_bot.application.security import DomainAuthorizationService
 from tea_party_reservation_bot.application.services import (
+    AdminEventService,
     EventDraftingService,
     EventPersistenceService,
     EventQueryService,
@@ -26,6 +27,7 @@ from tea_party_reservation_bot.config.settings import Settings
 from tea_party_reservation_bot.domain.parsing import AdminEventInputParser
 from tea_party_reservation_bot.infrastructure.db import SqlAlchemyUnitOfWork, create_session_factory
 from tea_party_reservation_bot.infrastructure.telegram.backends import (
+    SqlAlchemyAdminEventCommandPort,
     SqlAlchemyAdminRoleRepository,
     SqlAlchemyEventReadModelPort,
     SqlAlchemyNotificationPreferencePort,
@@ -101,6 +103,10 @@ class BotRuntime:
                     self.settings.app.timezone_name,
                 ),
                 publication_service=PublicationService(uow_factory, authorization_service, clock),
+            ),
+            admin_commands=SqlAlchemyAdminEventCommandPort(
+                service=AdminEventService(uow_factory, authorization_service, clock),
+                timezone=self.settings.app.timezone,
             ),
         )
         me = await bot.get_me()

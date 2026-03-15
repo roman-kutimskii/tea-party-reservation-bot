@@ -58,13 +58,13 @@ def test_render_roster_uses_multiline_lists() -> None:
             status="published_open",
         ),
         participants=[
-            ParticipantView(display_name="Alice", status="confirmed"),
-            ParticipantView(display_name="Bob", status="confirmed"),
+            ParticipantView(display_name="Alice", telegram_user_id=1001, status="confirmed"),
+            ParticipantView(display_name="Bob", telegram_user_id=1002, status="confirmed"),
         ],
-        waitlist=[ParticipantView(display_name="Charlie", status="active")],
+        waitlist=[ParticipantView(display_name="Charlie", telegram_user_id=1003, status="active")],
     )
 
     text = render_roster(roster)
 
-    assert "Подтверждены:\n- Alice\n- Bob" in text
-    assert "Лист ожидания:\n- Charlie" in text
+    assert "Подтверждены:\n- Alice (1001)\n- Bob (1002)" in text
+    assert "Лист ожидания:\n- Charlie (1003)" in text

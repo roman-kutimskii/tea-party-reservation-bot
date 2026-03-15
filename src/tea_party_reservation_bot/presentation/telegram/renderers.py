@@ -140,14 +140,29 @@ def render_admin_preview(
 def render_admin_events(events: Sequence[AdminEventView]) -> str:
     if not events:
         return "Событий пока нет."
-    return "Выберите событие для просмотра списка участников."
+    return (
+        "Выберите событие для просмотра участников.\n"
+        "Команды: /event_name, /event_description, /event_start, /event_deadline, "
+        "/event_capacity, /event_close, /event_reopen, /event_cancel, "
+        "/event_add_confirmed, /event_add_waitlist, /event_remove, /event_move_confirmed, "
+        "/event_move_waitlist."
+    )
 
 
 def render_roster(roster: EventRosterView) -> str:
     confirmed = (
-        "\n".join(f"- {escape(item.display_name)}" for item in roster.participants) or "- нет"
+        "\n".join(
+            f"- {escape(item.display_name)} ({item.telegram_user_id})"
+            for item in roster.participants
+        )
+        or "- нет"
     )
-    waitlist = "\n".join(f"- {escape(item.display_name)}" for item in roster.waitlist) or "- нет"
+    waitlist = (
+        "\n".join(
+            f"- {escape(item.display_name)} ({item.telegram_user_id})" for item in roster.waitlist
+        )
+        or "- нет"
+    )
     return (
         f"{escape(roster.event.tea_name)}\nПодтверждены:\n{confirmed}\nЛист ожидания:\n{waitlist}"
     )

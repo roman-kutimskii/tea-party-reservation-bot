@@ -17,6 +17,7 @@ from tea_party_reservation_bot.application.dto import TelegramProfile
 from tea_party_reservation_bot.application.security import DomainAuthorizationService
 from tea_party_reservation_bot.application.services import (
     AdminAccessService,
+    AdminEventService,
     EventPersistenceService,
     EventQueryService,
     NotificationPreferenceService,
@@ -135,6 +136,7 @@ def services(
         "events": EventPersistenceService(uow_factory, auth, "Europe/Moscow"),
         "publication": PublicationService(uow_factory, auth, clock),
         "query": EventQueryService(uow_factory, auth, clock),
+        "admin_events": AdminEventService(uow_factory, auth, clock),
         "notifications": NotificationPreferenceService(uow_factory),
         "registration": RegistrationService(uow_factory, clock, auth),
     }

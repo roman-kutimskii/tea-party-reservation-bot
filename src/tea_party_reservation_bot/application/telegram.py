@@ -84,6 +84,7 @@ class AdminEventView:
 @dataclass(slots=True, frozen=True)
 class ParticipantView:
     display_name: str
+    telegram_user_id: int
     status: str
     joined_at_local: datetime | None = None
 
@@ -164,6 +165,40 @@ class PublicationWorkflowPort(Protocol):
     ) -> PublicationReceipt: ...
 
 
+class AdminEventCommandPort(Protocol):
+    async def set_event_name(self, *, actor: Actor, event_id: str, tea_name: str) -> str: ...
+
+    async def set_event_description(
+        self, *, actor: Actor, event_id: str, description: str | None
+    ) -> str: ...
+
+    async def set_event_start(self, *, actor: Actor, event_id: str, starts_at: str) -> str: ...
+
+    async def set_event_cancel_deadline(
+        self, *, actor: Actor, event_id: str, cancel_deadline_at: str
+    ) -> str: ...
+
+    async def set_event_capacity(self, *, actor: Actor, event_id: str, capacity: str) -> str: ...
+
+    async def close_registration(self, *, actor: Actor, event_id: str) -> str: ...
+
+    async def reopen_registration(self, *, actor: Actor, event_id: str) -> str: ...
+
+    async def cancel_event(self, *, actor: Actor, event_id: str) -> str: ...
+
+    async def add_participant(
+        self, *, actor: Actor, event_id: str, telegram_user_id: str, target: str
+    ) -> str: ...
+
+    async def remove_participant(
+        self, *, actor: Actor, event_id: str, telegram_user_id: str
+    ) -> str: ...
+
+    async def move_participant(
+        self, *, actor: Actor, event_id: str, telegram_user_id: str, target: str
+    ) -> str: ...
+
+
 @dataclass(slots=True)
 class TelegramBotApplicationService:
     roles: AdminRoleRepository
@@ -174,6 +209,7 @@ class TelegramBotApplicationService:
     registrations: RegistrationCommandPort
     notifications: NotificationPreferencePort
     publication: PublicationWorkflowPort
+    admin_commands: AdminEventCommandPort
 
     async def sync_profile(self, profile: TelegramUserProfile) -> Actor:
         await self.user_sync.upsert_user(profile)
@@ -264,4 +300,77 @@ class TelegramBotApplicationService:
             actor=actor,
             previews=previews,
             idempotency_key=idempotency_key,
+        )
+
+    async def set_event_name(self, *, actor: Actor, event_id: str, tea_name: str) -> str:
+        return await self.admin_commands.set_event_name(
+            actor=actor, event_id=event_id, tea_name=tea_name
+        )
+
+    async def set_event_description(
+        self, *, actor: Actor, event_id: str, description: str | None
+    ) -> str:
+        return await self.admin_commands.set_event_description(
+            actor=actor,
+            event_id=event_id,
+            description=description,
+        )
+
+    async def set_event_start(self, *, actor: Actor, event_id: str, starts_at: str) -> str:
+        return await self.admin_commands.set_event_start(
+            actor=actor, event_id=event_id, starts_at=starts_at
+        )
+
+    async def set_event_cancel_deadline(
+        self, *, actor: Actor, event_id: str, cancel_deadline_at: str
+    ) -> str:
+        return await self.admin_commands.set_event_cancel_deadline(
+            actor=actor,
+            event_id=event_id,
+            cancel_deadline_at=cancel_deadline_at,
+        )
+
+    async def set_event_capacity(self, *, actor: Actor, event_id: str, capacity: str) -> str:
+        return await self.admin_commands.set_event_capacity(
+            actor=actor,
+            event_id=event_id,
+            capacity=capacity,
+        )
+
+    async def close_event_registration(self, *, actor: Actor, event_id: str) -> str:
+        return await self.admin_commands.close_registration(actor=actor, event_id=event_id)
+
+    async def reopen_event_registration(self, *, actor: Actor, event_id: str) -> str:
+        return await self.admin_commands.reopen_registration(actor=actor, event_id=event_id)
+
+    async def cancel_admin_event(self, *, actor: Actor, event_id: str) -> str:
+        return await self.admin_commands.cancel_event(actor=actor, event_id=event_id)
+
+    async def add_event_participant(
+        self, *, actor: Actor, event_id: str, telegram_user_id: str, target: str
+    ) -> str:
+        return await self.admin_commands.add_participant(
+            actor=actor,
+            event_id=event_id,
+            telegram_user_id=telegram_user_id,
+            target=target,
+        )
+
+    async def remove_event_participant(
+        self, *, actor: Actor, event_id: str, telegram_user_id: str
+    ) -> str:
+        return await self.admin_commands.remove_participant(
+            actor=actor,
+            event_id=event_id,
+            telegram_user_id=telegram_user_id,
+        )
+
+    async def move_event_participant(
+        self, *, actor: Actor, event_id: str, telegram_user_id: str, target: str
+    ) -> str:
+        return await self.admin_commands.move_participant(
+            actor=actor,
+            event_id=event_id,
+            telegram_user_id=telegram_user_id,
+            target=target,
         )

@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from tea_party_reservation_bot.application.dto import OutboxMessage, StoredEvent, StoredUser
 from tea_party_reservation_bot.application.services import PublicationService, SystemClock
 from tea_party_reservation_bot.application.telegram import PublicEventView
+from tea_party_reservation_bot.domain.enums import EventStatus
 from tea_party_reservation_bot.infrastructure.db.models import (
     EventOccurrenceModel,
     PublicationBatchEventModel,
@@ -85,6 +86,9 @@ class OutboxProcessor:
             "waitlist.joined",
             "waitlist.promoted",
             "reservation.cancelled",
+            "waitlist.cancelled",
+            "event.updated",
+            "event.cancelled",
         }:
             await self._dispatch_notification(message)
             return
@@ -127,13 +131,23 @@ class OutboxProcessor:
 
     async def _dispatch_notification(self, message: OutboxMessage) -> None:
         event = await self._load_event(int(message.payload["event_id"]))
-        if message.event_type in {"reservation.confirmed", "waitlist.joined"}:
+        if message.event_type in {
+            "reservation.confirmed",
+            "waitlist.joined",
+            "waitlist.cancelled",
+            "event.updated",
+            "event.cancelled",
+        }:
             telegram_user_id = int(message.payload["telegram_user_id"])
         else:
             user = await self._load_user(int(message.payload["user_id"]))
             telegram_user_id = user.telegram_user_id
 
-        text = self._render_notification_text(message.event_type, event)
+        text = self._render_notification_text(
+            message.event_type,
+            event,
+            details=message.payload.get("details"),
+        )
         await self.notifier.send_direct_message(telegram_user_id=telegram_user_id, text=text)
         await self._refresh_group_post(event)
 
@@ -211,7 +225,8 @@ class OutboxProcessor:
                     reserved_seats=model.reserved_seats,
                     description=model.description,
                     status=model.status,
-                    registration_open=True,
+                    registration_open=model.status
+                    in {EventStatus.PUBLISHED_OPEN, EventStatus.PUBLISHED_FULL},
                 )
                 for model in models
             ]
@@ -223,7 +238,9 @@ class OutboxProcessor:
             raise LookupError(msg)
         return message.id
 
-    def _render_notification_text(self, event_type: str, event: StoredEvent) -> str:
+    def _render_notification_text(
+        self, event_type: str, event: StoredEvent, *, details: str | None = None
+    ) -> str:
         starts_at_local = event.starts_at.astimezone(load_timezone(self.timezone_name))
         event_label = f"{event.tea_name}\n{starts_at_local:%d.%m.%Y %H:%M}"
         templates = {
@@ -231,8 +248,14 @@ class OutboxProcessor:
             "waitlist.joined": f"Вы добавлены в лист ожидания.\n{event_label}",
             "waitlist.promoted": f"Освободилось место. Ваша запись подтверждена.\n{event_label}",
             "reservation.cancelled": f"Ваша запись отменена.\n{event_label}",
+            "waitlist.cancelled": f"Вы удалены из листа ожидания.\n{event_label}",
+            "event.updated": f"Событие изменено.\n{event_label}",
+            "event.cancelled": f"Событие отменено.\n{event_label}",
         }
-        return templates[event_type]
+        message = templates[event_type]
+        if details:
+            message = f"{message}\n{details}"
+        return message
 
 
 class GroupPublisher(Protocol):

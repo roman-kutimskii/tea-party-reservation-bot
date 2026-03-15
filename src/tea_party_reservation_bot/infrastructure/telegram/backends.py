@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import tzinfo
+from datetime import datetime, tzinfo
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from tea_party_reservation_bot.application.contracts import AdminRoleRepository
 from tea_party_reservation_bot.application.dto import TelegramProfile
 from tea_party_reservation_bot.application.services import (
+    AdminEventService,
     EventPersistenceService,
     EventQueryService,
     NotificationPreferenceService,
@@ -18,6 +19,7 @@ from tea_party_reservation_bot.application.services import (
     UserApplicationService,
 )
 from tea_party_reservation_bot.application.telegram import (
+    AdminEventCommandPort,
     AdminEventView,
     EventReadModelPort,
     EventRosterView,
@@ -41,7 +43,7 @@ from tea_party_reservation_bot.domain.enums import (
 )
 from tea_party_reservation_bot.domain.events import EventPreview
 from tea_party_reservation_bot.domain.rbac import Actor, RoleSet
-from tea_party_reservation_bot.exceptions import ConflictError, NotFoundError
+from tea_party_reservation_bot.exceptions import ApplicationError, ConflictError, NotFoundError
 from tea_party_reservation_bot.infrastructure.db.models import (
     EventOccurrenceModel,
     ReservationModel,
@@ -65,6 +67,31 @@ def _display_name(user: UserModel) -> str:
         return f"@{user.username}"
     full_name = " ".join(part for part in [user.first_name, user.last_name] if part)
     return full_name or f"id:{user.telegram_user_id}"
+
+
+def _parse_datetime(value: str, timezone: tzinfo) -> datetime:
+    try:
+        date_part, time_part = value.strip().split(maxsplit=1)
+        day, month, year = (int(token) for token in date_part.split("."))
+        hour, minute = (int(token) for token in time_part.split(":"))
+        parsed = datetime(year, month, day, hour, minute, tzinfo=timezone)
+    except ValueError as exc:
+        raise ApplicationError("Используйте формат даты DD.MM.YYYY HH:MM.") from exc
+    return parsed.astimezone(now_utc().tzinfo)
+
+
+def _parse_admin_event_id(raw_event_id: str) -> int:
+    try:
+        return _parse_event_id(raw_event_id)
+    except LookupError as exc:
+        raise ApplicationError("Некорректный id события.") from exc
+
+
+def _parse_telegram_user_id(raw_telegram_user_id: str) -> int:
+    try:
+        return int(raw_telegram_user_id)
+    except ValueError as exc:
+        raise ApplicationError("Некорректный telegram_user_id.") from exc
 
 
 @dataclass(slots=True)
@@ -169,6 +196,7 @@ class SqlAlchemyEventReadModelPort(EventReadModelPort):
                 participants=tuple(
                     ParticipantView(
                         display_name=_display_name(user),
+                        telegram_user_id=user.telegram_user_id,
                         status=reservation.status,
                         joined_at_local=reservation.created_at.astimezone(self.timezone),
                     )
@@ -177,6 +205,7 @@ class SqlAlchemyEventReadModelPort(EventReadModelPort):
                 waitlist=tuple(
                     ParticipantView(
                         display_name=_display_name(user),
+                        telegram_user_id=user.telegram_user_id,
                         status=entry.status,
                         joined_at_local=entry.created_at.astimezone(self.timezone),
                     )
@@ -364,3 +393,109 @@ class SqlAlchemyPublicationWorkflowPort(PublicationWorkflowPort):
                 f"Событий к отправке: {len(requested.event_ids)}."
             ),
         )
+
+
+@dataclass(slots=True)
+class SqlAlchemyAdminEventCommandPort(AdminEventCommandPort):
+    service: AdminEventService
+    timezone: tzinfo
+
+    async def set_event_name(self, *, actor: Actor, event_id: str, tea_name: str) -> str:
+        result = await self.service.update_event_fields(
+            actor=actor,
+            event_id=_parse_admin_event_id(event_id),
+            tea_name=tea_name,
+        )
+        return result.message
+
+    async def set_event_description(
+        self, *, actor: Actor, event_id: str, description: str | None
+    ) -> str:
+        result = await self.service.update_event_fields(
+            actor=actor,
+            event_id=_parse_admin_event_id(event_id),
+            description=description,
+        )
+        return result.message
+
+    async def set_event_start(self, *, actor: Actor, event_id: str, starts_at: str) -> str:
+        result = await self.service.update_event_fields(
+            actor=actor,
+            event_id=_parse_admin_event_id(event_id),
+            starts_at=_parse_datetime(starts_at, self.timezone),
+        )
+        return result.message
+
+    async def set_event_cancel_deadline(
+        self, *, actor: Actor, event_id: str, cancel_deadline_at: str
+    ) -> str:
+        result = await self.service.update_event_fields(
+            actor=actor,
+            event_id=_parse_admin_event_id(event_id),
+            cancel_deadline_at=_parse_datetime(cancel_deadline_at, self.timezone),
+        )
+        return result.message
+
+    async def set_event_capacity(self, *, actor: Actor, event_id: str, capacity: str) -> str:
+        try:
+            parsed_capacity = int(capacity)
+        except ValueError as exc:
+            raise ApplicationError("Вместимость должна быть целым числом.") from exc
+        result = await self.service.set_capacity(
+            actor=actor,
+            event_id=_parse_admin_event_id(event_id),
+            capacity=parsed_capacity,
+        )
+        return result.message
+
+    async def close_registration(self, *, actor: Actor, event_id: str) -> str:
+        result = await self.service.close_registration(
+            actor=actor, event_id=_parse_admin_event_id(event_id)
+        )
+        return result.message
+
+    async def reopen_registration(self, *, actor: Actor, event_id: str) -> str:
+        result = await self.service.reopen_registration(
+            actor=actor,
+            event_id=_parse_admin_event_id(event_id),
+        )
+        return result.message
+
+    async def cancel_event(self, *, actor: Actor, event_id: str) -> str:
+        result = await self.service.cancel_event(
+            actor=actor,
+            event_id=_parse_admin_event_id(event_id),
+        )
+        return result.message
+
+    async def add_participant(
+        self, *, actor: Actor, event_id: str, telegram_user_id: str, target: str
+    ) -> str:
+        result = await self.service.add_participant(
+            actor=actor,
+            event_id=_parse_admin_event_id(event_id),
+            telegram_user_id=_parse_telegram_user_id(telegram_user_id),
+            target=target,
+        )
+        return result.message
+
+    async def remove_participant(
+        self, *, actor: Actor, event_id: str, telegram_user_id: str
+    ) -> str:
+        result = await self.service.remove_participant(
+            actor=actor,
+            event_id=_parse_admin_event_id(event_id),
+            telegram_user_id=_parse_telegram_user_id(telegram_user_id),
+        )
+        return result.message
+
+    async def move_participant(
+        self, *, actor: Actor, event_id: str, telegram_user_id: str, target: str
+    ) -> str:
+        result = await self.service.move_participant(
+            actor=actor,
+            event_id=_parse_admin_event_id(event_id),
+            telegram_user_id=_parse_telegram_user_id(telegram_user_id),
+            target=target,
+        )
+        return result.message

@@ -333,6 +333,27 @@ class EventRepository:
         )
         return rows
 
+    async def list_active_participant_telegram_user_ids(self, event_id: int) -> list[int]:
+        confirmed_stmt = (
+            select(UserModel.telegram_user_id)
+            .join(ReservationModel, ReservationModel.user_id == UserModel.id)
+            .where(
+                ReservationModel.event_id == event_id,
+                ReservationModel.status == ReservationStatus.CONFIRMED,
+            )
+        )
+        waitlist_stmt = (
+            select(UserModel.telegram_user_id)
+            .join(WaitlistEntryModel, WaitlistEntryModel.user_id == UserModel.id)
+            .where(
+                WaitlistEntryModel.event_id == event_id,
+                WaitlistEntryModel.status == WaitlistStatus.ACTIVE,
+            )
+        )
+        confirmed_ids = list((await self.session.execute(confirmed_stmt)).scalars().all())
+        waitlist_ids = list((await self.session.execute(waitlist_stmt)).scalars().all())
+        return list(dict.fromkeys([*confirmed_ids, *waitlist_ids]))
+
     def _to_stored_event(self, model: EventOccurrenceModel) -> StoredEvent:
         return StoredEvent(
             id=model.id,
@@ -620,6 +641,18 @@ class RegistrationRepository:
         )
         return result.scalar_one_or_none()
 
+    async def list_active_waitlist_entries(self, *, event_id: int) -> list[WaitlistEntryModel]:
+        result = await self.session.execute(
+            select(WaitlistEntryModel)
+            .where(
+                WaitlistEntryModel.event_id == event_id,
+                WaitlistEntryModel.status == WaitlistStatus.ACTIVE,
+            )
+            .order_by(WaitlistEntryModel.position.asc(), WaitlistEntryModel.id.asc())
+            .with_for_update()
+        )
+        return list(result.scalars().all())
+
     async def create_confirmed_reservation(
         self,
         *,
@@ -656,9 +689,9 @@ class RegistrationRepository:
         return model
 
     async def next_waitlist_entry_for_promotion(
-        self, *, event_id: int
+        self, *, event_id: int, exclude_user_ids: Sequence[int] = ()
     ) -> WaitlistEntryModel | None:
-        result = await self.session.execute(
+        stmt = (
             select(WaitlistEntryModel)
             .where(
                 WaitlistEntryModel.event_id == event_id,
@@ -668,4 +701,7 @@ class RegistrationRepository:
             .limit(1)
             .with_for_update(skip_locked=True)
         )
+        if exclude_user_ids:
+            stmt = stmt.where(WaitlistEntryModel.user_id.not_in(tuple(exclude_user_ids)))
+        result = await self.session.execute(stmt)
         return result.scalar_one_or_none()

@@ -16,7 +16,11 @@ from tea_party_reservation_bot.application.telegram import (
 )
 from tea_party_reservation_bot.domain.events import EventPreview
 from tea_party_reservation_bot.domain.rbac import Actor
-from tea_party_reservation_bot.exceptions import AuthorizationError, ValidationError
+from tea_party_reservation_bot.exceptions import (
+    ApplicationError,
+    AuthorizationError,
+    ValidationError,
+)
 from tea_party_reservation_bot.infrastructure.telegram.deep_links import decode_start_parameter
 from tea_party_reservation_bot.infrastructure.telegram.publication import (
     TelegramPublicationRenderer,
@@ -120,6 +124,15 @@ def _extract_callback_suffix(data: str | None, prefix: str) -> str | None:
         return None
     suffix = data.removeprefix(prefix)
     return suffix or None
+
+
+def _extract_command_arguments(text: str | None, parts_after_command: int) -> list[str] | None:
+    if text is None:
+        return None
+    chunks = text.split(maxsplit=parts_after_command)
+    if len(chunks) < parts_after_command + 1:
+        return None
+    return chunks[1:]
 
 
 def _register_public_menu_handlers(
@@ -459,11 +472,31 @@ def _register_admin_draft_handlers(
         await callback.answer("Готово")
 
 
-def _register_admin_event_handlers(
+def _register_admin_event_handlers(  # noqa: PLR0915
     router: Router,
     deps: TelegramHandlerDependencies,
     load_actor: LoadActor,
 ) -> None:
+    async def _handle_admin_command(
+        message: Message,
+        operation: Callable[[Actor], Awaitable[str]],
+    ) -> None:
+        user = message.from_user
+        if user is None:
+            return
+        actor = await load_actor(user)
+        try:
+            response = await operation(actor)
+        except AuthorizationError:
+            await message.answer(render_admin_denied(), reply_markup=visitor_menu_keyboard())
+            return
+        except (ApplicationError, ValidationError, LookupError) as exc:
+            await message.answer(
+                str(exc) if not isinstance(exc, LookupError) else _INVALID_CALLBACK_TEXT
+            )
+            return
+        await message.answer(response)
+
     @router.message(Command("events_admin"))
     @router.message(Command("participants"))
     @router.message(F.text == "События")
@@ -503,6 +536,212 @@ def _register_admin_event_handlers(
                 else "Список участников пока недоступен."
             )
         await callback.answer()
+
+    @router.message(Command("event_name"))
+    async def event_name(message: Message) -> None:
+        args = _extract_command_arguments(message.text, 2)
+        if args is None:
+            await message.answer("Формат: /event_name <event_id> <новое название>")
+            return
+        event_id, tea_name = args
+        await _handle_admin_command(
+            message,
+            lambda actor: deps.application_service.set_event_name(
+                actor=actor,
+                event_id=event_id,
+                tea_name=tea_name,
+            ),
+        )
+
+    @router.message(Command("event_description"))
+    async def event_description(message: Message) -> None:
+        args = _extract_command_arguments(message.text, 2)
+        if args is None:
+            await message.answer("Формат: /event_description <event_id> <описание или ->")
+            return
+        event_id, description = args
+        await _handle_admin_command(
+            message,
+            lambda actor: deps.application_service.set_event_description(
+                actor=actor,
+                event_id=event_id,
+                description=None if description == "-" else description,
+            ),
+        )
+
+    @router.message(Command("event_start"))
+    async def event_start(message: Message) -> None:
+        args = _extract_command_arguments(message.text, 2)
+        if args is None:
+            await message.answer("Формат: /event_start <event_id> <DD.MM.YYYY HH:MM>")
+            return
+        event_id, starts_at = args
+        await _handle_admin_command(
+            message,
+            lambda actor: deps.application_service.set_event_start(
+                actor=actor,
+                event_id=event_id,
+                starts_at=starts_at,
+            ),
+        )
+
+    @router.message(Command("event_deadline"))
+    async def event_deadline(message: Message) -> None:
+        args = _extract_command_arguments(message.text, 2)
+        if args is None:
+            await message.answer("Формат: /event_deadline <event_id> <DD.MM.YYYY HH:MM>")
+            return
+        event_id, deadline = args
+        await _handle_admin_command(
+            message,
+            lambda actor: deps.application_service.set_event_cancel_deadline(
+                actor=actor,
+                event_id=event_id,
+                cancel_deadline_at=deadline,
+            ),
+        )
+
+    @router.message(Command("event_capacity"))
+    async def event_capacity(message: Message) -> None:
+        args = _extract_command_arguments(message.text, 2)
+        if args is None:
+            await message.answer("Формат: /event_capacity <event_id> <вместимость>")
+            return
+        event_id, capacity = args
+        await _handle_admin_command(
+            message,
+            lambda actor: deps.application_service.set_event_capacity(
+                actor=actor,
+                event_id=event_id,
+                capacity=capacity,
+            ),
+        )
+
+    @router.message(Command("event_close"))
+    async def event_close(message: Message) -> None:
+        args = _extract_command_arguments(message.text, 1)
+        if args is None:
+            await message.answer("Формат: /event_close <event_id>")
+            return
+        await _handle_admin_command(
+            message,
+            lambda actor: deps.application_service.close_event_registration(
+                actor=actor,
+                event_id=args[0],
+            ),
+        )
+
+    @router.message(Command("event_reopen"))
+    async def event_reopen(message: Message) -> None:
+        args = _extract_command_arguments(message.text, 1)
+        if args is None:
+            await message.answer("Формат: /event_reopen <event_id>")
+            return
+        await _handle_admin_command(
+            message,
+            lambda actor: deps.application_service.reopen_event_registration(
+                actor=actor,
+                event_id=args[0],
+            ),
+        )
+
+    @router.message(Command("event_cancel"))
+    async def event_cancel(message: Message) -> None:
+        args = _extract_command_arguments(message.text, 1)
+        if args is None:
+            await message.answer("Формат: /event_cancel <event_id>")
+            return
+        await _handle_admin_command(
+            message,
+            lambda actor: deps.application_service.cancel_admin_event(
+                actor=actor,
+                event_id=args[0],
+            ),
+        )
+
+    @router.message(Command("event_add_confirmed"))
+    async def event_add_confirmed(message: Message) -> None:
+        args = _extract_command_arguments(message.text, 2)
+        if args is None:
+            await message.answer("Формат: /event_add_confirmed <event_id> <telegram_user_id>")
+            return
+        event_id, telegram_user_id = args
+        await _handle_admin_command(
+            message,
+            lambda actor: deps.application_service.add_event_participant(
+                actor=actor,
+                event_id=event_id,
+                telegram_user_id=telegram_user_id,
+                target="confirmed",
+            ),
+        )
+
+    @router.message(Command("event_add_waitlist"))
+    async def event_add_waitlist(message: Message) -> None:
+        args = _extract_command_arguments(message.text, 2)
+        if args is None:
+            await message.answer("Формат: /event_add_waitlist <event_id> <telegram_user_id>")
+            return
+        event_id, telegram_user_id = args
+        await _handle_admin_command(
+            message,
+            lambda actor: deps.application_service.add_event_participant(
+                actor=actor,
+                event_id=event_id,
+                telegram_user_id=telegram_user_id,
+                target="waitlist",
+            ),
+        )
+
+    @router.message(Command("event_remove"))
+    async def event_remove(message: Message) -> None:
+        args = _extract_command_arguments(message.text, 2)
+        if args is None:
+            await message.answer("Формат: /event_remove <event_id> <telegram_user_id>")
+            return
+        event_id, telegram_user_id = args
+        await _handle_admin_command(
+            message,
+            lambda actor: deps.application_service.remove_event_participant(
+                actor=actor,
+                event_id=event_id,
+                telegram_user_id=telegram_user_id,
+            ),
+        )
+
+    @router.message(Command("event_move_confirmed"))
+    async def event_move_confirmed(message: Message) -> None:
+        args = _extract_command_arguments(message.text, 2)
+        if args is None:
+            await message.answer("Формат: /event_move_confirmed <event_id> <telegram_user_id>")
+            return
+        event_id, telegram_user_id = args
+        await _handle_admin_command(
+            message,
+            lambda actor: deps.application_service.move_event_participant(
+                actor=actor,
+                event_id=event_id,
+                telegram_user_id=telegram_user_id,
+                target="confirmed",
+            ),
+        )
+
+    @router.message(Command("event_move_waitlist"))
+    async def event_move_waitlist(message: Message) -> None:
+        args = _extract_command_arguments(message.text, 2)
+        if args is None:
+            await message.answer("Формат: /event_move_waitlist <event_id> <telegram_user_id>")
+            return
+        event_id, telegram_user_id = args
+        await _handle_admin_command(
+            message,
+            lambda actor: deps.application_service.move_event_participant(
+                actor=actor,
+                event_id=event_id,
+                telegram_user_id=telegram_user_id,
+                target="waitlist",
+            ),
+        )
 
 
 def _register_misc_handlers(router: Router) -> None:

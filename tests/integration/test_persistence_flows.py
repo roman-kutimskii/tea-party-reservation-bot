@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from tea_party_reservation_bot.application.dto import TelegramProfile
 from tea_party_reservation_bot.application.services import (
     AdminAccessService,
+    AdminEventService,
     EventPersistenceService,
     EventQueryService,
     NotificationPreferenceService,
@@ -280,3 +281,153 @@ async def test_duplicate_registration_with_new_idempotency_key_is_rejected(
         await registration_service.register(
             profile=profile, event_id=event_id, idempotency_key="second"
         )
+
+
+@pytest.mark.asyncio
+async def test_admin_can_edit_capacity_and_close_then_reopen_registration(
+    services: dict[str, object], session_factory: async_sessionmaker[AsyncSession]
+) -> None:
+    event_id = await _create_published_event(services, capacity=1)
+    admin_access = cast(AdminAccessService, services["admin_access"])
+    admin_events = cast(AdminEventService, services["admin_events"])
+    registration_service = cast(RegistrationService, services["registration"])
+    actor = await admin_access.load_actor(1000)
+
+    await registration_service.register(
+        profile=TelegramProfile(
+            telegram_user_id=7001, username="u1", first_name="One", last_name=None
+        ),
+        event_id=event_id,
+        idempotency_key="admin-capacity-r1",
+    )
+    await registration_service.register(
+        profile=TelegramProfile(
+            telegram_user_id=7002, username="u2", first_name="Two", last_name=None
+        ),
+        event_id=event_id,
+        idempotency_key="admin-capacity-r2",
+    )
+
+    await admin_events.set_capacity(actor=actor, event_id=event_id, capacity=2)
+    await admin_events.close_registration(actor=actor, event_id=event_id)
+    await admin_events.reopen_registration(actor=actor, event_id=event_id)
+
+    async with session_factory() as session:
+        event = await session.get(EventOccurrenceModel, event_id)
+        reservations = (
+            (
+                await session.execute(
+                    select(ReservationModel).where(ReservationModel.status == "confirmed")
+                )
+            )
+            .scalars()
+            .all()
+        )
+        waitlist = (
+            (
+                await session.execute(
+                    select(WaitlistEntryModel).where(WaitlistEntryModel.status == "promoted")
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert event is not None
+        assert event.capacity == 2
+        assert event.reserved_seats == 2
+        assert event.status == EventStatus.PUBLISHED_FULL
+        assert len(reservations) == 2
+        assert len(waitlist) == 1
+
+
+@pytest.mark.asyncio
+async def test_admin_can_manage_participants_and_cancel_event(
+    services: dict[str, object], session_factory: async_sessionmaker[AsyncSession]
+) -> None:
+    event_id = await _create_published_event(services, capacity=2)
+    admin_access = cast(AdminAccessService, services["admin_access"])
+    admin_events = cast(AdminEventService, services["admin_events"])
+    user_service = cast(UserApplicationService, services["user"])
+    actor = await admin_access.load_actor(1000)
+
+    for telegram_user_id, username, first_name in [
+        (8001, "alpha", "Alpha"),
+        (8002, "beta", "Beta"),
+        (8003, "gamma", "Gamma"),
+    ]:
+        await user_service.ensure_user(
+            TelegramProfile(
+                telegram_user_id=telegram_user_id,
+                username=username,
+                first_name=first_name,
+                last_name=None,
+            )
+        )
+
+    await admin_events.add_participant(
+        actor=actor,
+        event_id=event_id,
+        telegram_user_id=8001,
+        target="confirmed",
+    )
+    await admin_events.add_participant(
+        actor=actor,
+        event_id=event_id,
+        telegram_user_id=8002,
+        target="waitlist",
+    )
+    await admin_events.move_participant(
+        actor=actor,
+        event_id=event_id,
+        telegram_user_id=8002,
+        target="confirmed",
+    )
+    await admin_events.move_participant(
+        actor=actor,
+        event_id=event_id,
+        telegram_user_id=8001,
+        target="waitlist",
+    )
+    await admin_events.remove_participant(
+        actor=actor,
+        event_id=event_id,
+        telegram_user_id=8001,
+    )
+    await admin_events.add_participant(
+        actor=actor,
+        event_id=event_id,
+        telegram_user_id=8003,
+        target="confirmed",
+    )
+    await admin_events.cancel_event(actor=actor, event_id=event_id)
+
+    async with session_factory() as session:
+        event = await session.get(EventOccurrenceModel, event_id)
+        confirmed = (
+            (
+                await session.execute(
+                    select(ReservationModel.status).order_by(ReservationModel.id.asc())
+                )
+            )
+            .scalars()
+            .all()
+        )
+        waitlist_statuses = (
+            (
+                await session.execute(
+                    select(WaitlistEntryModel.status).order_by(WaitlistEntryModel.id.asc())
+                )
+            )
+            .scalars()
+            .all()
+        )
+        outbox_types = (await session.execute(select(OutboxEventModel.event_type))).scalars().all()
+        assert event is not None
+        assert event.status == EventStatus.CANCELLED
+        assert event.reserved_seats == 0
+        assert confirmed == ["cancelled", "cancelled", "cancelled"]
+        assert waitlist_statuses == ["promoted", "cancelled"]
+        assert "waitlist.joined" in outbox_types
+        assert "waitlist.promoted" in outbox_types
+        assert "waitlist.cancelled" in outbox_types
+        assert "event.cancelled" in outbox_types
