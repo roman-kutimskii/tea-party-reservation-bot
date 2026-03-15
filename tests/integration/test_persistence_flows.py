@@ -69,6 +69,59 @@ async def _create_published_event(
 
 
 @pytest.mark.asyncio
+async def test_publication_success_transitions_draft_event_to_published_open(
+    services: dict[str, object], session_factory: async_sessionmaker[AsyncSession]
+) -> None:
+    event_id = await _create_published_event(services, capacity=2)
+
+    async with session_factory() as session:
+        event = await session.get(EventOccurrenceModel, event_id)
+        assert event is not None
+        assert event.status == EventStatus.PUBLISHED_OPEN
+        assert event.published_at is not None
+
+
+@pytest.mark.asyncio
+async def test_publication_failure_resets_event_to_draft(
+    services: dict[str, object], session_factory: async_sessionmaker[AsyncSession]
+) -> None:
+    admin_access = cast(AdminAccessService, services["admin_access"])
+    event_service = cast(EventPersistenceService, services["events"])
+    publication_service = cast(PublicationService, services["publication"])
+
+    actor = await admin_access.load_actor(1000)
+    start = datetime.now(tz=UTC) + timedelta(days=3)
+    draft = EventDraft(
+        tea_name="Те Гуань Инь",
+        description="Неудачная публикация",
+        starts_at_local=start,
+        starts_at_utc=start,
+        capacity=4,
+        cancel_deadline_source=CancelDeadlineSource.DEFAULT,
+        cancel_deadline_at_local=start - timedelta(hours=4),
+        cancel_deadline_at_utc=start - timedelta(hours=4),
+    )
+    saved = await event_service.save_drafts(actor, [draft])
+    requested = await publication_service.request_single_event_publication(
+        actor=actor,
+        event_id=saved.event_ids[0],
+        idempotency_key=f"publish-fail-{saved.event_ids[0]}",
+    )
+
+    await publication_service.mark_publication_failed(
+        batch_id=requested.batch_id or 0,
+        event_ids=list(requested.event_ids),
+    )
+
+    async with session_factory() as session:
+        event = await session.get(EventOccurrenceModel, saved.event_ids[0])
+        assert event is not None
+        assert event.status == EventStatus.DRAFT
+        assert event.publication_batch_id is None
+        assert event.published_at is None
+
+
+@pytest.mark.asyncio
 async def test_registration_is_idempotent(
     services: dict[str, object], session_factory: async_sessionmaker[AsyncSession]
 ) -> None:

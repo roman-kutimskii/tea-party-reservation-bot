@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+from html import escape
 
 from aiogram import Bot
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
@@ -104,22 +105,22 @@ class TelegramPublicationRenderer:
     def _render_preview_block(self, preview: EventPreview, *, prefix: str | None) -> str:
         event = preview.normalized
         lines = [
-            f"{prefix} {event.tea_name}" if prefix else event.tea_name,
+            f"{prefix} {escape(event.tea_name)}" if prefix else escape(event.tea_name),
             f"Дата: {event.starts_at_local:%d.%m.%Y %H:%M}",
             f"Мест: {event.capacity}",
         ]
         if event.description:
-            lines.append(f"Описание: {event.description}")
+            lines.append(f"Описание: {escape(event.description)}")
         return "\n".join(lines)
 
     def _render_event_block(self, event: PublicEventView, *, prefix: str | None = None) -> str:
         lines = [
-            f"{prefix} {event.tea_name}" if prefix else event.tea_name,
+            f"{prefix} {escape(event.tea_name)}" if prefix else escape(event.tea_name),
             f"Дата: {event.starts_at_local:%d.%m.%Y %H:%M}",
             f"Свободно мест: {event.seats_left}",
         ]
         if event.description:
-            lines.append(event.description)
+            lines.append(escape(event.description))
         return "\n".join(lines)
 
 

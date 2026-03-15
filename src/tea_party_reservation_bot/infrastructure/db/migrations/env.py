@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from logging.config import fileConfig
 
 from alembic import context
@@ -11,7 +12,7 @@ from tea_party_reservation_bot.infrastructure.db.base import Base
 
 config = context.config
 
-if config.config_file_name is not None:
+if config.config_file_name is not None and Path(config.config_file_name).exists():
     fileConfig(config.config_file_name)
 
 settings = get_settings()

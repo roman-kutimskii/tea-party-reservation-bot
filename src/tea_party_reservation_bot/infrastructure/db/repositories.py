@@ -105,6 +105,12 @@ class UserRepository:
         )
 
 
+def _published_event_status(model: EventOccurrenceModel) -> EventStatus:
+    if model.reserved_seats >= model.capacity:
+        return EventStatus.PUBLISHED_FULL
+    return EventStatus.PUBLISHED_OPEN
+
+
 @dataclass(slots=True)
 class RoleRepository:
     session: AsyncSession
@@ -180,6 +186,19 @@ class EventRepository:
         result = await self.session.execute(stmt)
         return [self._to_stored_event(model) for model in result.scalars().all()]
 
+    async def list_publication_event_ids(self, batch_id: int) -> tuple[int, ...]:
+        result = await self.session.execute(
+            select(EventOccurrenceModel.id)
+            .join(
+                PublicationBatchEventModel,
+                PublicationBatchEventModel.event_id == EventOccurrenceModel.id,
+                isouter=True,
+            )
+            .where(EventOccurrenceModel.publication_batch_id == batch_id)
+            .order_by(PublicationBatchEventModel.sort_order.asc(), EventOccurrenceModel.id.asc())
+        )
+        return tuple(result.scalars().all())
+
     async def mark_publication_succeeded(
         self,
         *,
@@ -192,10 +211,22 @@ class EventRepository:
             model = await self.get_by_id(event_id, for_update=True)
             if model is None:
                 continue
+            model.status = _published_event_status(model)
             model.telegram_group_chat_id = chat_id
             model.telegram_group_message_id = message_id
             model.published_at = published_at
-            model.sync_status_from_capacity()
+        await self.session.flush()
+
+    async def mark_publication_failed(self, *, event_ids: Sequence[int]) -> None:
+        for event_id in event_ids:
+            model = await self.get_by_id(event_id, for_update=True)
+            if model is None:
+                continue
+            model.status = EventStatus.DRAFT
+            model.publication_batch_id = None
+            model.telegram_group_chat_id = None
+            model.telegram_group_message_id = None
+            model.published_at = None
         await self.session.flush()
 
     async def list_active_registrations_for_user(
@@ -476,7 +507,6 @@ class IdempotencyRepository:
         try:
             await self.session.flush()
         except IntegrityError:
-            await self.session.rollback()
             raise
 
     @staticmethod
@@ -501,7 +531,6 @@ class PublicationRepository:
         if event is None:
             msg = f"Event {event_id} not found"
             raise LookupError(msg)
-        event.status = EventStatus.DRAFT
         batch = PublicationBatchModel(
             status=PublicationBatchStatus.PUBLISHING, created_by_user_id=actor_user_id
         )

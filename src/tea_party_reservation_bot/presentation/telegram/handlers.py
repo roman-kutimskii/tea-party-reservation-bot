@@ -109,9 +109,9 @@ def _register_public_menu_handlers(
     async def send_events(message: Message) -> None:
         events = await deps.application_service.list_events()
         if not events:
-            await message.answer(render_events_empty(), reply_markup=visitor_menu_keyboard())
+            await message.answer(render_events_empty())
             return
-        await message.answer("Ближайшие дегустации:", reply_markup=visitor_menu_keyboard())
+        await message.answer("Ближайшие дегустации:")
         for event in events:
             await message.answer(
                 render_event_card(event), reply_markup=event_actions_keyboard(event)
@@ -125,7 +125,7 @@ def _register_public_menu_handlers(
             telegram_user_id=user.id
         )
         if not registrations:
-            await message.answer(render_my_empty(), reply_markup=visitor_menu_keyboard())
+            await message.answer(render_my_empty())
             return
         for registration in registrations:
             keyboard = (
@@ -182,7 +182,7 @@ def _register_public_menu_handlers(
     @router.message(Command("help"))
     @router.message(F.text == "Как это работает")
     async def help_command(message: Message) -> None:
-        await message.answer(render_help(), reply_markup=visitor_menu_keyboard())
+        await message.answer(render_help())
 
     @router.message(F.text == "Уведомления")
     async def notifications(message: Message) -> None:
@@ -198,7 +198,7 @@ def _register_public_callback_handlers(router: Router, deps: TelegramHandlerDepe
         user = callback.from_user
         settings = await deps.application_service.toggle_notifications(telegram_user_id=user.id)
         if callback.message is not None:
-            await callback.message.answer(
+            await callback.message.edit_text(
                 render_notifications(settings),
                 reply_markup=notifications_keyboard(settings.enabled),
             )
@@ -210,9 +210,10 @@ def _register_public_callback_handlers(router: Router, deps: TelegramHandlerDepe
         event = await deps.application_service.get_event(event_id)
         if callback.message is not None:
             if event is None:
-                await callback.message.answer("Событие не найдено или уже недоступно.")
+                await callback.answer("Событие не найдено или уже недоступно.", show_alert=True)
+                return
             else:
-                await callback.message.answer(
+                await callback.message.edit_text(
                     render_event_details(event),
                     reply_markup=event_actions_keyboard(event),
                 )
@@ -250,9 +251,8 @@ def _register_registration_handlers(
     async def prompt_cancel_registration(callback: CallbackQuery) -> None:
         registration_id = (callback.data or "").split(":", maxsplit=2)[2]
         if callback.message is not None:
-            await callback.message.answer(
-                "Отменить запись?",
-                reply_markup=cancellation_confirm_keyboard(registration_id),
+            await callback.message.edit_reply_markup(
+                reply_markup=cancellation_confirm_keyboard(registration_id)
             )
         await callback.answer()
 
@@ -278,7 +278,7 @@ def _register_registration_handlers(
     @router.message(Command("cancel"))
     async def cancel(message: Message, state: FSMContext) -> None:
         await state.clear()
-        await message.answer("Текущее действие отменено.", reply_markup=visitor_menu_keyboard())
+        await message.answer("Текущее действие отменено.")
 
 
 def _register_admin_entry_handlers(
@@ -313,7 +313,7 @@ def _register_admin_entry_handlers(
             return
         await state.set_state(AdminDraftStates.waiting_for_single_input)
         await state.update_data(mode="single")
-        await message.answer(render_single_event_template(), reply_markup=admin_menu_keyboard())
+        await message.answer(render_single_event_template())
 
     @router.message(Command("new_batch"))
     @router.message(F.text == "Создать неделю")
@@ -329,7 +329,7 @@ def _register_admin_entry_handlers(
             return
         await state.set_state(AdminDraftStates.waiting_for_batch_input)
         await state.update_data(mode="batch")
-        await message.answer(render_batch_template(), reply_markup=admin_menu_keyboard())
+        await message.answer(render_batch_template())
 
 
 def _register_admin_draft_handlers(
@@ -463,4 +463,4 @@ def _register_admin_event_handlers(
 def _register_misc_handlers(router: Router) -> None:
     @router.message()
     async def fallback(message: Message) -> None:
-        await message.answer(render_unknown_text(), reply_markup=visitor_menu_keyboard())
+        await message.answer(render_unknown_text())

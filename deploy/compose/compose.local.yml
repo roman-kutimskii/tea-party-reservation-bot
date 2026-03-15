@@ -1,5 +1,6 @@
 services:
   bot:
+    image: tea-party-reservation-bot:bot-local
     build:
       context: ../../
       dockerfile: Dockerfile
@@ -7,6 +8,7 @@ services:
       - ./env/local.env
 
   worker:
+    image: tea-party-reservation-bot:worker-local
     build:
       context: ../../
       dockerfile: Dockerfile

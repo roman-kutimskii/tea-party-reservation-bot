@@ -229,6 +229,9 @@ class PublicationService:
         message_id: int,
     ) -> PublicationStateChangeResult:
         async with self.uow_factory() as uow:
+            stored_event_ids = await uow.events.list_publication_event_ids(batch_id)
+            if set(stored_event_ids) != set(event_ids):
+                raise ApplicationError("Состав публикации не совпадает с данными в базе.")
             published_at = self.clock.now()
             await uow.publications.mark_batch_state(
                 batch_id=batch_id,
@@ -245,7 +248,7 @@ class PublicationService:
             )
             return PublicationStateChangeResult(
                 batch_id=batch_id,
-                event_ids=tuple(event_ids),
+                event_ids=stored_event_ids,
                 status=PublicationBatchStatus.PUBLISHED,
             )
 
@@ -253,12 +256,16 @@ class PublicationService:
         self, *, batch_id: int, event_ids: list[int]
     ) -> PublicationStateChangeResult:
         async with self.uow_factory() as uow:
+            stored_event_ids = await uow.events.list_publication_event_ids(batch_id)
+            if set(stored_event_ids) != set(event_ids):
+                raise ApplicationError("Состав публикации не совпадает с данными в базе.")
             await uow.publications.mark_batch_state(
                 batch_id=batch_id, status=PublicationBatchStatus.FAILED
             )
+            await uow.events.mark_publication_failed(event_ids=stored_event_ids)
             return PublicationStateChangeResult(
                 batch_id=batch_id,
-                event_ids=tuple(event_ids),
+                event_ids=stored_event_ids,
                 status=PublicationBatchStatus.FAILED,
             )
 

@@ -1,7 +1,7 @@
 name: tea-party-reservation-bot
 
 x-app-service: &app-service
-  image: ${APP_IMAGE:-ghcr.io/example/tea-party-reservation-bot:latest}
+  image: ${APP_IMAGE:?APP_IMAGE must be set}
   restart: unless-stopped
   networks:
     - backend
@@ -17,7 +17,7 @@ x-app-service: &app-service
 services:
   bot:
     <<: *app-service
-    command: ["/bin/sh", "-lc", "${BOT_APP_COMMAND:-python -m tea_party_reservation_bot bot}"]
+    command: ["/bin/sh", "-c", "${BOT_APP_COMMAND:-python -m tea_party_reservation_bot bot}"]
     environment:
       APP_MIGRATE_ON_START: ${BOT_MIGRATE_ON_START:-1}
     labels:
@@ -25,7 +25,7 @@ services:
 
   worker:
     <<: *app-service
-    command: ["/bin/sh", "-lc", "${WORKER_APP_COMMAND:-python -m tea_party_reservation_bot worker}"]
+    command: ["/bin/sh", "-c", "${WORKER_APP_COMMAND:-python -m tea_party_reservation_bot worker}"]
     environment:
       APP_MIGRATE_ON_START: ${WORKER_MIGRATE_ON_START:-0}
     labels:
@@ -38,6 +38,9 @@ services:
       - backend
     environment:
       PGDATA: /var/lib/postgresql/data/pgdata
+      POSTGRES_DB: ${POSTGRES_DB:-tea_party}
+      POSTGRES_USER: ${POSTGRES_USER:-tea_party}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:

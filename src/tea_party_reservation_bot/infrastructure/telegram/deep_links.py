@@ -24,6 +24,8 @@ def decode_start_parameter(value: str | None) -> TelegramStartContext:
     if value is None or not value.startswith(EVENT_PREFIX):
         return TelegramStartContext()
     encoded = value.removeprefix(EVENT_PREFIX)
+    if not encoded:
+        return TelegramStartContext()
     padding = "=" * (-len(encoded) % 4)
     try:
         decoded = urlsafe_b64decode(f"{encoded}{padding}").decode("utf-8")

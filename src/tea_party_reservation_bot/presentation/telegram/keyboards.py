@@ -13,25 +13,30 @@ from tea_party_reservation_bot.application.telegram import (
     UserRegistrationView,
 )
 
+_VISITOR_MENU_KEYBOARD = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="Ближайшие дегустации"), KeyboardButton(text="Мои записи")],
+        [KeyboardButton(text="Уведомления"), KeyboardButton(text="Как это работает")],
+    ],
+    resize_keyboard=True,
+)
+
+
+_ADMIN_MENU_KEYBOARD = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="Создать событие"), KeyboardButton(text="Создать неделю")],
+        [KeyboardButton(text="События"), KeyboardButton(text="Участники")],
+    ],
+    resize_keyboard=True,
+)
+
 
 def visitor_menu_keyboard() -> ReplyKeyboardMarkup:
-    return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="Ближайшие дегустации"), KeyboardButton(text="Мои записи")],
-            [KeyboardButton(text="Уведомления"), KeyboardButton(text="Как это работает")],
-        ],
-        resize_keyboard=True,
-    )
+    return _VISITOR_MENU_KEYBOARD
 
 
 def admin_menu_keyboard() -> ReplyKeyboardMarkup:
-    return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="Создать событие"), KeyboardButton(text="Создать неделю")],
-            [KeyboardButton(text="События"), KeyboardButton(text="Участники")],
-        ],
-        resize_keyboard=True,
-    )
+    return _ADMIN_MENU_KEYBOARD
 
 
 def event_actions_keyboard(event: PublicEventView) -> InlineKeyboardMarkup:
@@ -89,14 +94,17 @@ def cancellation_confirm_keyboard(registration_id: str) -> InlineKeyboardMarkup:
     )
 
 
+_DRAFT_PREVIEW_KEYBOARD = InlineKeyboardMarkup(
+    inline_keyboard=[
+        [InlineKeyboardButton(text="Опубликовать", callback_data="draft:publish")],
+        [InlineKeyboardButton(text="Исправить", callback_data="draft:edit")],
+        [InlineKeyboardButton(text="Отмена", callback_data="draft:cancel")],
+    ]
+)
+
+
 def draft_preview_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="Опубликовать", callback_data="draft:publish")],
-            [InlineKeyboardButton(text="Исправить", callback_data="draft:edit")],
-            [InlineKeyboardButton(text="Отмена", callback_data="draft:cancel")],
-        ]
-    )
+    return _DRAFT_PREVIEW_KEYBOARD
 
 
 def admin_events_keyboard(events: list[AdminEventView]) -> InlineKeyboardMarkup:

@@ -6,6 +6,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     UV_LINK_MODE=copy \
     UV_COMPILE_BYTECODE=1 \
+    UV_PROJECT_ENVIRONMENT=/opt/venv \
     PATH="/opt/venv/bin:${PATH}"
 
 WORKDIR /app
@@ -29,4 +30,4 @@ RUN if [ -f pyproject.toml ]; then \
 RUN chmod +x /app/docker/entrypoint.sh
 
 ENTRYPOINT ["/app/docker/entrypoint.sh"]
-CMD ["python", "-m", "app.bot"]
+CMD ["python", "-m", "tea_party_reservation_bot", "bot"]

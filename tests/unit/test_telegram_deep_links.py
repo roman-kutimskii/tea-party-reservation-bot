@@ -17,3 +17,15 @@ def test_build_event_deep_link_uses_start_payload() -> None:
     link = build_event_deep_link(bot_username="tea_party_bot", event_id="abc")
 
     assert link.startswith("https://t.me/tea_party_bot?start=event-")
+
+
+def test_decode_start_parameter_rejects_empty_payload() -> None:
+    result = decode_start_parameter("event-")
+
+    assert result.event_id is None
+
+
+def test_build_event_deep_link_strips_at_prefix() -> None:
+    link = build_event_deep_link(bot_username="@tea_party_bot", event_id="abc")
+
+    assert link.startswith("https://t.me/tea_party_bot?start=event-")

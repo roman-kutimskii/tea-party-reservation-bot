@@ -47,18 +47,19 @@ class OutboxProcessor:
 
         processed = 0
         for message in messages:
+            message_id = self._require_message_id(message)
             try:
                 await self._dispatch(message)
             except Exception as exc:
                 logger.warning(
                     "worker.outbox.dispatch_failed",
-                    outbox_event_id=message.id,
+                    outbox_event_id=message_id,
                     event_type=message.event_type,
                     error=str(exc),
                 )
                 async with self.session_factory() as session:
                     await OutboxRepository(session).mark_failed(
-                        event_id=message.id or 0,
+                        event_id=message_id,
                         available_at=self.clock.now()
                         + timedelta(seconds=self.retry_delay_seconds * (message.attempt_count + 1)),
                         last_error=str(exc),
@@ -67,7 +68,7 @@ class OutboxProcessor:
             else:
                 async with self.session_factory() as session:
                     await OutboxRepository(session).mark_sent(
-                        event_id=message.id or 0,
+                        event_id=message_id,
                         sent_at=self.clock.now(),
                     )
                     await session.commit()
@@ -86,10 +87,15 @@ class OutboxProcessor:
         }:
             await self._dispatch_notification(message)
             return
+        msg = f"Unsupported outbox event type: {message.event_type}"
+        raise LookupError(msg)
 
     async def _dispatch_publication(self, message: OutboxMessage) -> None:
         batch_id = int(message.aggregate_id)
         events = await self._load_publication_events(batch_id)
+        if not events:
+            msg = f"Publication batch {batch_id} has no events"
+            raise LookupError(msg)
         if len(events) == 1:
             payload = self.publication_renderer.render_published_event_post(
                 bot_username=self.bot_username,
@@ -178,6 +184,13 @@ class OutboxProcessor:
                 )
                 for model in models
             ]
+
+    @staticmethod
+    def _require_message_id(message: OutboxMessage) -> int:
+        if message.id is None:
+            msg = f"Outbox message for {message.event_type} is missing an id"
+            raise LookupError(msg)
+        return message.id
 
     def _render_notification_text(self, event_type: str, event: StoredEvent) -> str:
         starts_at_local = event.starts_at.astimezone(load_timezone(self.timezone_name))

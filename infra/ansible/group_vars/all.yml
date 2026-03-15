@@ -7,16 +7,16 @@ env_dir: "{{ deploy_root }}/env"
 backup_root: /srv/tea-party-reservation-bot/backups
 monitoring_allowed_cidrs: []
 ufw_allowed_ssh_cidrs:
-  - 0.0.0.0/0
+  - 203.0.113.0/24
 app_service_name: tea-party-compose.service
 restic_repository: s3:https://s3.example.invalid/tea-party
-restic_password: change-me
+restic_password: "{{ vault_restic_password }}"
 restic_environment:
-  AWS_ACCESS_KEY_ID: replace-me
-  AWS_SECRET_ACCESS_KEY: replace-me
+  AWS_ACCESS_KEY_ID: "{{ vault_aws_access_key_id }}"
+  AWS_SECRET_ACCESS_KEY: "{{ vault_aws_secret_access_key }}"
   AWS_DEFAULT_REGION: eu-central-1
 postgres_backup_db: tea_party_prod
 postgres_backup_user: tea_party_prod
-postgres_backup_password: replace-me
+postgres_backup_password: "{{ vault_postgres_backup_password }}"
 postgres_backup_host: 127.0.0.1
 postgres_backup_port: 5432

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import asyncio
+import sys
+import warnings
 from collections.abc import AsyncIterator, Callable, Iterator
 
 import pytest
@@ -31,6 +34,20 @@ from tea_party_reservation_bot.infrastructure.db.uow import SqlAlchemyUnitOfWork
 def _async_dsn(container: PostgresContainer) -> str:
     dsn = container.get_connection_url()
     return dsn.replace("+psycopg2", "+psycopg")
+
+
+@pytest.fixture(scope="session")
+def event_loop_policy():
+    if sys.platform != "win32":
+        return asyncio.get_event_loop_policy()
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        selector_policy = getattr(asyncio, "WindowsSelectorEventLoopPolicy", None)
+    if selector_policy is None:
+        return asyncio.get_event_loop_policy()
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        return selector_policy()
 
 
 @pytest.fixture(scope="session")
