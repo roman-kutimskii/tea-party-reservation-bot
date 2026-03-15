@@ -13,7 +13,6 @@ from tea_party_reservation_bot.application.dto import TelegramProfile
 from tea_party_reservation_bot.application.services import (
     AdminEventService,
     AdminRoleManagementService,
-    EventPersistenceService,
     EventQueryService,
     NotificationPreferenceService,
     PublicationService,
@@ -396,8 +395,8 @@ class SqlAlchemyNotificationPreferencePort(NotificationPreferencePort):
 
 @dataclass(slots=True)
 class SqlAlchemyPublicationWorkflowPort(PublicationWorkflowPort):
-    event_persistence_service: EventPersistenceService
     publication_service: PublicationService
+    timezone_name: str
 
     async def publish_single(
         self,
@@ -406,10 +405,10 @@ class SqlAlchemyPublicationWorkflowPort(PublicationWorkflowPort):
         preview: EventPreview,
         idempotency_key: str,
     ) -> PublicationReceipt:
-        saved = await self.event_persistence_service.save_drafts(actor, [preview.normalized])
-        requested = await self.publication_service.request_single_event_publication(
+        requested = await self.publication_service.publish_single_draft(
             actor=actor,
-            event_id=saved.event_ids[0],
+            draft=preview.normalized,
+            timezone_name=self.timezone_name,
             idempotency_key=idempotency_key,
         )
         return PublicationReceipt(
@@ -427,11 +426,10 @@ class SqlAlchemyPublicationWorkflowPort(PublicationWorkflowPort):
         previews: Sequence[EventPreview],
         idempotency_key: str,
     ) -> PublicationReceipt:
-        drafts = [preview.normalized for preview in previews]
-        saved = await self.event_persistence_service.save_drafts(actor, drafts)
-        requested = await self.publication_service.request_batch_publication(
+        requested = await self.publication_service.publish_batch_drafts(
             actor=actor,
-            event_ids=list(saved.event_ids),
+            drafts=[preview.normalized for preview in previews],
+            timezone_name=self.timezone_name,
             period_label=None,
             idempotency_key=idempotency_key,
         )

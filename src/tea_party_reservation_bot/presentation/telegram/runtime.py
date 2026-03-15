@@ -16,7 +16,6 @@ from tea_party_reservation_bot.application.services import (
     AdminEventService,
     AdminRoleManagementService,
     EventDraftingService,
-    EventPersistenceService,
     EventQueryService,
     NotificationPreferenceService,
     PublicationService,
@@ -101,12 +100,8 @@ class BotRuntime:
                 NotificationPreferenceService(uow_factory)
             ),
             publication=SqlAlchemyPublicationWorkflowPort(
-                event_persistence_service=EventPersistenceService(
-                    uow_factory,
-                    authorization_service,
-                    self.settings.app.timezone_name,
-                ),
                 publication_service=PublicationService(uow_factory, authorization_service, clock),
+                timezone_name=self.settings.app.timezone_name,
             ),
             admin_commands=SqlAlchemyAdminEventCommandPort(
                 service=AdminEventService(uow_factory, authorization_service, clock),

@@ -140,7 +140,10 @@ async def test_db_backed_bot_ports_and_worker_process_publication_request(
         query_service=query_service,
         events=event_read_model,
     )
-    publication_port = SqlAlchemyPublicationWorkflowPort(event_service, publication_service)
+    publication_port = SqlAlchemyPublicationWorkflowPort(
+        publication_service=publication_service,
+        timezone_name="Europe/Moscow",
+    )
     notification_port = SqlAlchemyNotificationPreferencePort(notification_service)
     user_sync = SqlAlchemyTelegramUserSyncPort(user_service)
 
@@ -208,6 +211,81 @@ async def test_db_backed_bot_ports_and_worker_process_publication_request(
     assert settings.enabled is True
     listed = await registration_port.list_user_registrations(telegram_user_id=2001)
     assert listed == ()
+
+
+@pytest.mark.asyncio
+async def test_publication_port_publish_batch_persists_intent_and_outbox_together(
+    services: dict[str, object],
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    (
+        _user_service,
+        admin_access,
+        _event_service,
+        query_service,
+        _notification_service,
+        publication_service,
+        _registration_service,
+    ) = _services(services)
+    timezone = load_timezone("Europe/Moscow")
+    publication_port = SqlAlchemyPublicationWorkflowPort(
+        publication_service=publication_service,
+        timezone_name="Europe/Moscow",
+    )
+    event_read_model = SqlAlchemyEventReadModelPort(
+        session_factory=session_factory, timezone=timezone
+    )
+
+    actor = await admin_access.load_actor(1000)
+    first_start = datetime.now(tz=UTC) + timedelta(days=7)
+    second_start = first_start + timedelta(days=1)
+    previews = [
+        EventPreview(
+            normalized=EventDraft(
+                tea_name="Бай Му Дань",
+                description="Первая встреча",
+                starts_at_local=first_start.astimezone(timezone),
+                starts_at_utc=first_start,
+                capacity=6,
+                cancel_deadline_source=CancelDeadlineSource.DEFAULT,
+                cancel_deadline_at_local=(first_start - timedelta(hours=4)).astimezone(timezone),
+                cancel_deadline_at_utc=first_start - timedelta(hours=4),
+            ),
+            block_number=1,
+        ),
+        EventPreview(
+            normalized=EventDraft(
+                tea_name="Лун Цзин",
+                description="Вторая встреча",
+                starts_at_local=second_start.astimezone(timezone),
+                starts_at_utc=second_start,
+                capacity=5,
+                cancel_deadline_source=CancelDeadlineSource.DEFAULT,
+                cancel_deadline_at_local=(second_start - timedelta(hours=4)).astimezone(timezone),
+                cancel_deadline_at_utc=second_start - timedelta(hours=4),
+            ),
+            block_number=2,
+        ),
+    ]
+
+    receipt = await publication_port.publish_batch(
+        actor=actor,
+        previews=previews,
+        idempotency_key="publish-port-batch",
+    )
+
+    assert receipt.accepted is True
+    assert await query_service.list_published_upcoming_events() == []
+    assert await event_read_model.list_public_events() == []
+
+    async with session_factory() as session:
+        events = (await session.execute(select(EventOccurrenceModel))).scalars().all()
+        outbox_rows = (await session.execute(select(OutboxEventModel))).scalars().all()
+        assert len(events) == 2
+        assert len(outbox_rows) == 1
+        assert outbox_rows[0].event_type == "publication.requested"
+        assert outbox_rows[0].payload_json["kind"] == "batch"
+        assert outbox_rows[0].payload_json["event_ids"] == sorted(event.id for event in events)
 
 
 @pytest.mark.asyncio

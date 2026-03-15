@@ -249,12 +249,10 @@ class EventPersistenceService:
                 actor_user_id=admin_user.id,
                 timezone_name=self.timezone_name,
             )
-            await uow.audit_log.append(
+            await _append_draft_saved_audit_log(
+                uow,
                 actor_user_id=admin_user.id,
-                action="event_drafts_saved",
-                target_type="event_occurrence",
-                target_id=",".join(str(event_id) for event_id in event_ids),
-                payload_json={"event_ids": event_ids},
+                event_ids=event_ids,
             )
             return DraftSaveResult(event_ids=tuple(event_ids))
 
@@ -264,6 +262,107 @@ class PublicationService:
     uow_factory: Callable[[], UnitOfWork]
     authorization_service: AuthorizationService
     clock: Clock
+
+    async def publish_single_draft(
+        self,
+        *,
+        actor: Actor,
+        draft: EventDraft,
+        timezone_name: str,
+        idempotency_key: str,
+    ) -> PublicationRequestResult:
+        self.authorization_service.require(actor, Permission.CREATE_DRAFT)
+        self.authorization_service.require(actor, Permission.PUBLISH_EVENT)
+
+        async def operation(uow: UnitOfWork) -> PublicationRequestResult:
+            admin_user = await _require_existing_user(uow, actor.telegram_user_id)
+            event_ids = await uow.events.save_drafts(
+                [draft],
+                actor_user_id=admin_user.id,
+                timezone_name=timezone_name,
+            )
+            await _append_draft_saved_audit_log(
+                uow,
+                actor_user_id=admin_user.id,
+                event_ids=event_ids,
+            )
+            intent = await uow.publications.create_single_event_publication_intent(
+                event_id=event_ids[0],
+                actor_user_id=admin_user.id,
+            )
+            await _enqueue_publication_outbox(
+                uow,
+                clock=self.clock,
+                intent=intent,
+                publication_kind="single",
+            )
+            await _append_publication_requested_audit_log(
+                uow,
+                actor_user_id=admin_user.id,
+                action="single_event_publication_requested",
+                batch_id=intent.batch_id,
+                event_ids=intent.event_ids,
+            )
+            return PublicationRequestResult(batch_id=intent.batch_id, event_ids=intent.event_ids)
+
+        return await _run_idempotent(
+            self.uow_factory,
+            source="publish_single_draft",
+            idempotency_key=idempotency_key,
+            operation=operation,
+        )
+
+    async def publish_batch_drafts(
+        self,
+        *,
+        actor: Actor,
+        drafts: list[EventDraft],
+        timezone_name: str,
+        period_label: str | None,
+        idempotency_key: str,
+    ) -> PublicationRequestResult:
+        self.authorization_service.require(actor, Permission.CREATE_DRAFT)
+        self.authorization_service.require(actor, Permission.PUBLISH_EVENT)
+
+        async def operation(uow: UnitOfWork) -> PublicationRequestResult:
+            admin_user = await _require_existing_user(uow, actor.telegram_user_id)
+            event_ids = await uow.events.save_drafts(
+                drafts,
+                actor_user_id=admin_user.id,
+                timezone_name=timezone_name,
+            )
+            await _append_draft_saved_audit_log(
+                uow,
+                actor_user_id=admin_user.id,
+                event_ids=event_ids,
+            )
+            intent = await uow.publications.create_batch_publication_intent(
+                event_ids=event_ids,
+                actor_user_id=admin_user.id,
+                period_label=period_label,
+            )
+            await _enqueue_publication_outbox(
+                uow,
+                clock=self.clock,
+                intent=intent,
+                publication_kind="batch",
+            )
+            await _append_publication_requested_audit_log(
+                uow,
+                actor_user_id=admin_user.id,
+                action="batch_publication_requested",
+                batch_id=intent.batch_id,
+                event_ids=intent.event_ids,
+                extra_payload={"period_label": period_label},
+            )
+            return PublicationRequestResult(batch_id=intent.batch_id, event_ids=intent.event_ids)
+
+        return await _run_idempotent(
+            self.uow_factory,
+            source="publish_batch_drafts",
+            idempotency_key=idempotency_key,
+            operation=operation,
+        )
 
     async def request_single_event_publication(
         self,
@@ -286,12 +385,12 @@ class PublicationService:
                 intent=intent,
                 publication_kind="single",
             )
-            await uow.audit_log.append(
+            await _append_publication_requested_audit_log(
+                uow,
                 actor_user_id=admin_user.id,
                 action="single_event_publication_requested",
-                target_type="publication_batch",
-                target_id=str(intent.batch_id),
-                payload_json={"event_ids": list(intent.event_ids)},
+                batch_id=intent.batch_id,
+                event_ids=intent.event_ids,
             )
             return PublicationRequestResult(batch_id=intent.batch_id, event_ids=intent.event_ids)
 
@@ -325,12 +424,13 @@ class PublicationService:
                 intent=intent,
                 publication_kind="batch",
             )
-            await uow.audit_log.append(
+            await _append_publication_requested_audit_log(
+                uow,
                 actor_user_id=admin_user.id,
                 action="batch_publication_requested",
-                target_type="publication_batch",
-                target_id=str(intent.batch_id),
-                payload_json={"event_ids": list(intent.event_ids), "period_label": period_label},
+                batch_id=intent.batch_id,
+                event_ids=intent.event_ids,
+                extra_payload={"period_label": period_label},
             )
             return PublicationRequestResult(batch_id=intent.batch_id, event_ids=intent.event_ids)
 
@@ -1265,6 +1365,42 @@ async def _enqueue_publication_outbox(
             payload={"event_ids": list(intent.event_ids), "kind": publication_kind},
             available_at=clock.now(),
         )
+    )
+
+
+async def _append_draft_saved_audit_log(
+    uow: UnitOfWork,
+    *,
+    actor_user_id: int,
+    event_ids: list[int],
+) -> None:
+    await uow.audit_log.append(
+        actor_user_id=actor_user_id,
+        action="event_drafts_saved",
+        target_type="event_occurrence",
+        target_id=",".join(str(event_id) for event_id in event_ids),
+        payload_json={"event_ids": event_ids},
+    )
+
+
+async def _append_publication_requested_audit_log(
+    uow: UnitOfWork,
+    *,
+    actor_user_id: int,
+    action: str,
+    batch_id: int | None,
+    event_ids: tuple[int, ...],
+    extra_payload: dict[str, Any] | None = None,
+) -> None:
+    payload_json: dict[str, Any] = {"event_ids": list(event_ids)}
+    if extra_payload is not None:
+        payload_json.update(extra_payload)
+    await uow.audit_log.append(
+        actor_user_id=actor_user_id,
+        action=action,
+        target_type="publication_batch",
+        target_id=str(batch_id),
+        payload_json=payload_json,
     )
 
 
