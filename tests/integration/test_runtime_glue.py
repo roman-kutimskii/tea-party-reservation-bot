@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
@@ -51,6 +51,7 @@ from tea_party_reservation_bot.infrastructure.telegram.backends import (
 )
 from tea_party_reservation_bot.infrastructure.telegram.deep_links import build_event_deep_link
 from tea_party_reservation_bot.infrastructure.telegram.publication import (
+    PostingRightsMissingError,
     TelegramGroupPostPayload,
     TelegramPublicationRenderer,
 )
@@ -72,14 +73,41 @@ class FakeMessage:
 class FakeGroupPublisher:
     messages: list[tuple[int, str]]
     edited_messages: list[tuple[int, int, str]]
+    deleted_messages: list[tuple[int, int]] = field(default_factory=list)
+    fail_send_times: int = 0
+    fail_edit_times: int = 0
+    fail_after_send_times: int = 0
+    posting_rights_missing_on_send: bool = False
+    posting_rights_missing_on_edit: bool = False
 
     async def send_group_post(self, *, chat_id: int, payload: TelegramGroupPostPayload) -> Message:
+        if self.posting_rights_missing_on_send:
+            raise PostingRightsMissingError(
+                "Missing rights to publish messages in the configured Telegram chat."
+            )
+        if self.fail_send_times > 0:
+            self.fail_send_times -= 1
+            raise RuntimeError("send failed")
         self.messages.append((chat_id, payload.text))
         return cast(Any, FakeMessage(chat=FakeChat(chat_id), message_id=777))
+
+    async def delete_group_post(self, *, chat_id: int, message_id: int) -> bool:
+        if self.fail_after_send_times > 0:
+            self.fail_after_send_times -= 1
+            return False
+        self.deleted_messages.append((chat_id, message_id))
+        return True
 
     async def edit_group_post(
         self, *, chat_id: int, message_id: int, payload: TelegramGroupPostPayload
     ) -> Message:
+        if self.posting_rights_missing_on_edit:
+            raise PostingRightsMissingError(
+                "Missing rights to edit messages in the configured Telegram chat."
+            )
+        if self.fail_edit_times > 0:
+            self.fail_edit_times -= 1
+            raise RuntimeError("edit failed")
         self.edited_messages.append((chat_id, message_id, payload.text))
         return cast(Any, FakeMessage(chat=FakeChat(chat_id), message_id=message_id))
 
@@ -94,6 +122,33 @@ class FakeNotifier:
             Any,
             FakeMessage(chat=FakeChat(telegram_user_id), message_id=len(self.messages)),
         )
+
+
+@dataclass(slots=True)
+class FlakyPublicationService:
+    delegate: PublicationService
+    fail_mark_publication_succeeded_times: int = 0
+
+    async def mark_publication_succeeded(
+        self,
+        *,
+        batch_id: int,
+        event_ids: list[int],
+        chat_id: int,
+        message_id: int,
+    ) -> Any:
+        if self.fail_mark_publication_succeeded_times > 0:
+            self.fail_mark_publication_succeeded_times -= 1
+            raise RuntimeError("mark_publication_succeeded failed")
+        return await self.delegate.mark_publication_succeeded(
+            batch_id=batch_id,
+            event_ids=event_ids,
+            chat_id=chat_id,
+            message_id=message_id,
+        )
+
+    async def mark_publication_failed(self, *, batch_id: int, event_ids: list[int]) -> Any:
+        return await self.delegate.mark_publication_failed(batch_id=batch_id, event_ids=event_ids)
 
 
 def _services(
@@ -185,7 +240,7 @@ async def test_db_backed_bot_ports_and_worker_process_publication_request(
     processor = OutboxProcessor(
         session_factory=session_factory,
         publication_service=publication_service,
-        group_publisher=FakeGroupPublisher(messages=[], edited_messages=[]),
+        group_publisher=FakeGroupPublisher(messages=[], edited_messages=[], deleted_messages=[]),
         notifier=FakeNotifier(messages=[]),
         publication_renderer=TelegramPublicationRenderer(),
         bot_username="tea_party_bot",
@@ -352,7 +407,7 @@ async def test_batch_publication_worker_sends_one_combined_group_post_with_disti
 
     assert receipt.accepted is True
 
-    group_publisher = FakeGroupPublisher(messages=[], edited_messages=[])
+    group_publisher = FakeGroupPublisher(messages=[], edited_messages=[], deleted_messages=[])
     processor = OutboxProcessor(
         session_factory=session_factory,
         publication_service=publication_service,
@@ -387,6 +442,250 @@ async def test_batch_publication_worker_sends_one_combined_group_post_with_disti
     assert first_link in payload_text
     assert second_link in payload_text
     assert payload_text.count("\n\n") == 1
+
+
+@pytest.mark.asyncio
+async def test_publication_worker_marks_terminal_failure_when_posting_rights_are_missing(
+    services: dict[str, object],
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    (
+        _user_service,
+        admin_access,
+        event_service,
+        _query_service,
+        _notification_service,
+        publication_service,
+        _registration_service,
+    ) = _services(services)
+    actor = await admin_access.load_actor(1000)
+    timezone = load_timezone("Europe/Moscow")
+    start = datetime.now(tz=UTC) + timedelta(days=5)
+    draft = EventDraft(
+        tea_name="Те Ло Хань",
+        description="Проверка прав публикации",
+        starts_at_local=start.astimezone(timezone),
+        starts_at_utc=start,
+        capacity=4,
+        cancel_deadline_source=CancelDeadlineSource.DEFAULT,
+        cancel_deadline_at_local=(start - timedelta(hours=4)).astimezone(timezone),
+        cancel_deadline_at_utc=start - timedelta(hours=4),
+    )
+    saved = await event_service.save_drafts(actor, [draft])
+    await publication_service.request_single_event_publication(
+        actor=actor,
+        event_id=saved.event_ids[0],
+        idempotency_key="publish-missing-rights",
+    )
+
+    processed = await OutboxProcessor(
+        session_factory=session_factory,
+        publication_service=publication_service,
+        group_publisher=FakeGroupPublisher(
+            messages=[],
+            edited_messages=[],
+            deleted_messages=[],
+            posting_rights_missing_on_send=True,
+        ),
+        notifier=FakeNotifier(messages=[]),
+        publication_renderer=TelegramPublicationRenderer(),
+        bot_username="tea_party_bot",
+        group_chat_id=-100123,
+        timezone_name="Europe/Moscow",
+        clock=SystemClock(),
+        retry_delay_seconds=0,
+    ).run_once(limit=10)
+
+    assert processed == 1
+
+    async with session_factory() as session:
+        event = await session.get(EventOccurrenceModel, saved.event_ids[0])
+        outbox = (await session.execute(select(OutboxEventModel))).scalar_one()
+        assert event is not None
+        assert event.status == EventStatus.DRAFT
+        assert event.publication_batch_id is None
+        assert outbox.sent_at is not None
+        assert outbox.attempt_count == 0
+
+
+@pytest.mark.asyncio
+async def test_publication_worker_reconciles_after_telegram_post_succeeds_but_db_write_fails(
+    services: dict[str, object],
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    (
+        _user_service,
+        admin_access,
+        event_service,
+        _query_service,
+        _notification_service,
+        publication_service,
+        _registration_service,
+    ) = _services(services)
+    actor = await admin_access.load_actor(1000)
+    timezone = load_timezone("Europe/Moscow")
+    start = datetime.now(tz=UTC) + timedelta(days=6)
+    draft = EventDraft(
+        tea_name="Дань Цун",
+        description="Проверка реконсиляции",
+        starts_at_local=start.astimezone(timezone),
+        starts_at_utc=start,
+        capacity=5,
+        cancel_deadline_source=CancelDeadlineSource.DEFAULT,
+        cancel_deadline_at_local=(start - timedelta(hours=4)).astimezone(timezone),
+        cancel_deadline_at_utc=start - timedelta(hours=4),
+    )
+    saved = await event_service.save_drafts(actor, [draft])
+    await publication_service.request_single_event_publication(
+        actor=actor,
+        event_id=saved.event_ids[0],
+        idempotency_key="publish-reconciliation",
+    )
+
+    flaky_publication_service = FlakyPublicationService(
+        delegate=publication_service,
+        fail_mark_publication_succeeded_times=1,
+    )
+    group_publisher = FakeGroupPublisher(
+        messages=[],
+        edited_messages=[],
+        deleted_messages=[],
+        fail_after_send_times=1,
+    )
+    processor = OutboxProcessor(
+        session_factory=session_factory,
+        publication_service=cast(Any, flaky_publication_service),
+        group_publisher=group_publisher,
+        notifier=FakeNotifier(messages=[]),
+        publication_renderer=TelegramPublicationRenderer(),
+        bot_username="tea_party_bot",
+        group_chat_id=-100123,
+        timezone_name="Europe/Moscow",
+        clock=SystemClock(),
+        retry_delay_seconds=0,
+    )
+
+    first_processed = await processor.run_once(limit=10)
+
+    assert first_processed == 0
+    assert len(group_publisher.messages) == 1
+    assert group_publisher.deleted_messages == []
+
+    async with session_factory() as session:
+        outbox = (await session.execute(select(OutboxEventModel))).scalar_one()
+        assert outbox.sent_at is None
+        assert outbox.attempt_count == 1
+        assert outbox.payload_json["reconciliation_chat_id"] == -100123
+        assert outbox.payload_json["reconciliation_message_id"] == 777
+
+    second_processed = await processor.run_once(limit=10)
+
+    assert second_processed == 1
+    assert len(group_publisher.messages) == 1
+
+    async with session_factory() as session:
+        event = await session.get(EventOccurrenceModel, saved.event_ids[0])
+        outbox = (await session.execute(select(OutboxEventModel))).scalar_one()
+        assert event is not None
+        assert event.status == EventStatus.PUBLISHED_OPEN
+        assert event.telegram_group_chat_id == -100123
+        assert event.telegram_group_message_id == 777
+        assert outbox.sent_at is not None
+
+
+@pytest.mark.asyncio
+async def test_notification_worker_still_sends_direct_message_when_group_edit_rights_are_missing(
+    services: dict[str, object],
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    (
+        user_service,
+        admin_access,
+        event_service,
+        _query_service,
+        _notification_service,
+        publication_service,
+        registration_service,
+    ) = _services(services)
+    actor = await admin_access.load_actor(1000)
+    timezone = load_timezone("Europe/Moscow")
+    start = datetime.now(tz=UTC) + timedelta(days=4)
+    draft = EventDraft(
+        tea_name="Бай Хао Инь Чжэнь",
+        description="Проверка редактирования поста",
+        starts_at_local=start.astimezone(timezone),
+        starts_at_utc=start,
+        capacity=1,
+        cancel_deadline_source=CancelDeadlineSource.DEFAULT,
+        cancel_deadline_at_local=(start - timedelta(hours=4)).astimezone(timezone),
+        cancel_deadline_at_utc=start - timedelta(hours=4),
+    )
+    saved = await event_service.save_drafts(actor, [draft])
+    await publication_service.request_single_event_publication(
+        actor=actor,
+        event_id=saved.event_ids[0],
+        idempotency_key="publish-notification-rights",
+    )
+    await user_service.ensure_user(
+        TelegramProfile(
+            telegram_user_id=3301,
+            username="guest3301",
+            first_name="Guest",
+            last_name=None,
+        )
+    )
+
+    await OutboxProcessor(
+        session_factory=session_factory,
+        publication_service=publication_service,
+        group_publisher=FakeGroupPublisher(messages=[], edited_messages=[], deleted_messages=[]),
+        notifier=FakeNotifier(messages=[]),
+        publication_renderer=TelegramPublicationRenderer(),
+        bot_username="tea_party_bot",
+        group_chat_id=-100123,
+        timezone_name="Europe/Moscow",
+        clock=SystemClock(),
+        retry_delay_seconds=0,
+    ).run_once(limit=10)
+
+    await registration_service.register(
+        profile=TelegramProfile(
+            telegram_user_id=3301,
+            username="guest3301",
+            first_name="Guest",
+            last_name=None,
+        ),
+        event_id=saved.event_ids[0],
+        idempotency_key="notification-rights-registration",
+    )
+
+    notifier = FakeNotifier(messages=[])
+    processed = await OutboxProcessor(
+        session_factory=session_factory,
+        publication_service=publication_service,
+        group_publisher=FakeGroupPublisher(
+            messages=[],
+            edited_messages=[],
+            deleted_messages=[],
+            posting_rights_missing_on_edit=True,
+        ),
+        notifier=notifier,
+        publication_renderer=TelegramPublicationRenderer(),
+        bot_username="tea_party_bot",
+        group_chat_id=-100123,
+        timezone_name="Europe/Moscow",
+        clock=SystemClock(),
+        retry_delay_seconds=0,
+    ).run_once(limit=10)
+
+    assert processed == 1
+    assert len(notifier.messages) == 1
+    assert notifier.messages[0][0] == 3301
+    assert "подтверждено 1 место" in notifier.messages[0][1]
+
+    async with session_factory() as session:
+        outbox_rows = (await session.execute(select(OutboxEventModel))).scalars().all()
+        assert all(row.sent_at is not None for row in outbox_rows)
 
 
 @pytest.mark.asyncio
@@ -437,7 +736,7 @@ async def test_db_backed_ports_show_real_registrations_roster_and_notifications(
     processor = OutboxProcessor(
         session_factory=session_factory,
         publication_service=publication_service,
-        group_publisher=FakeGroupPublisher(messages=[], edited_messages=[]),
+        group_publisher=FakeGroupPublisher(messages=[], edited_messages=[], deleted_messages=[]),
         notifier=FakeNotifier(messages=[]),
         publication_renderer=TelegramPublicationRenderer(),
         bot_username="tea_party_bot",
@@ -496,7 +795,7 @@ async def test_db_backed_ports_show_real_registrations_roster_and_notifications(
     assert cancelled is True
 
     notifier = FakeNotifier(messages=[])
-    group_publisher = FakeGroupPublisher(messages=[], edited_messages=[])
+    group_publisher = FakeGroupPublisher(messages=[], edited_messages=[], deleted_messages=[])
     processor = OutboxProcessor(
         session_factory=session_factory,
         publication_service=publication_service,
@@ -589,7 +888,10 @@ async def test_worker_sends_announcement_update_and_cancellation_notifications(
     await OutboxProcessor(
         session_factory=session_factory,
         publication_service=publication_service,
-        group_publisher=cast(Any, FakeGroupPublisher(messages=[], edited_messages=[])),
+        group_publisher=cast(
+            Any,
+            FakeGroupPublisher(messages=[], edited_messages=[], deleted_messages=[]),
+        ),
         notifier=cast(Any, announcement_notifier),
         publication_renderer=TelegramPublicationRenderer(),
         bot_username="tea_party_bot",
@@ -603,7 +905,7 @@ async def test_worker_sends_announcement_update_and_cancellation_notifications(
     assert announcement_notifier.messages == []
 
     flow_notifier = FakeNotifier(messages=[])
-    flow_group_publisher = FakeGroupPublisher(messages=[], edited_messages=[])
+    flow_group_publisher = FakeGroupPublisher(messages=[], edited_messages=[], deleted_messages=[])
     await OutboxProcessor(
         session_factory=session_factory,
         publication_service=publication_service,
@@ -649,7 +951,7 @@ async def test_worker_sends_announcement_update_and_cancellation_notifications(
     await admin_events.cancel_event(actor=actor, event_id=saved.event_ids[0])
 
     state_notifier = FakeNotifier(messages=[])
-    state_group_publisher = FakeGroupPublisher(messages=[], edited_messages=[])
+    state_group_publisher = FakeGroupPublisher(messages=[], edited_messages=[], deleted_messages=[])
     await OutboxProcessor(
         session_factory=session_factory,
         publication_service=publication_service,

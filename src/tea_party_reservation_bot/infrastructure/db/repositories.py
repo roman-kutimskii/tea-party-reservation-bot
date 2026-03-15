@@ -579,6 +579,7 @@ class OutboxRepository:
         event_id: int,
         available_at: datetime,
         last_error: str,
+        payload_updates: dict[str, Any] | None = None,
     ) -> None:
         row = await self.session.get(OutboxEventModel, event_id, with_for_update=True)
         if row is None:
@@ -586,6 +587,8 @@ class OutboxRepository:
         row.attempt_count += 1
         row.available_at = available_at
         row.last_error = last_error
+        if payload_updates:
+            row.payload_json = {**row.payload_json, **payload_updates}
         await self.session.flush()
 
 

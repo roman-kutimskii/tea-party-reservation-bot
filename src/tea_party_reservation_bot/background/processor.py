@@ -23,11 +23,22 @@ from tea_party_reservation_bot.infrastructure.db.repositories import (
 )
 from tea_party_reservation_bot.infrastructure.telegram.deep_links import build_event_deep_link
 from tea_party_reservation_bot.infrastructure.telegram.publication import (
+    PostingRightsMissingError,
     TelegramGroupPostPayload,
     TelegramPublicationRenderer,
 )
 from tea_party_reservation_bot.logging import get_logger
 from tea_party_reservation_bot.time import load_timezone
+
+
+class TerminalOutboxDispatchError(RuntimeError):
+    pass
+
+
+class RetryableOutboxDispatchError(RuntimeError):
+    def __init__(self, message: str, *, payload_updates: dict[str, int] | None = None) -> None:
+        super().__init__(message)
+        self.payload_updates = payload_updates
 
 
 @dataclass(slots=True)
@@ -53,6 +64,36 @@ class OutboxProcessor:
             message_id = self._require_message_id(message)
             try:
                 await self._dispatch(message)
+            except TerminalOutboxDispatchError as exc:
+                logger.warning(
+                    "worker.outbox.dispatch_terminal_failure",
+                    outbox_event_id=message_id,
+                    event_type=message.event_type,
+                    error=str(exc),
+                )
+                async with self.session_factory() as session:
+                    await OutboxRepository(session).mark_sent(
+                        event_id=message_id,
+                        sent_at=self.clock.now(),
+                    )
+                    await session.commit()
+                processed += 1
+            except RetryableOutboxDispatchError as exc:
+                logger.warning(
+                    "worker.outbox.dispatch_failed",
+                    outbox_event_id=message_id,
+                    event_type=message.event_type,
+                    error=str(exc),
+                )
+                async with self.session_factory() as session:
+                    await OutboxRepository(session).mark_failed(
+                        event_id=message_id,
+                        available_at=self.clock.now()
+                        + timedelta(seconds=self.retry_delay_seconds * (message.attempt_count + 1)),
+                        last_error=str(exc),
+                        payload_updates=exc.payload_updates,
+                    )
+                    await session.commit()
             except Exception as exc:
                 logger.warning(
                     "worker.outbox.dispatch_failed",
@@ -99,10 +140,26 @@ class OutboxProcessor:
 
     async def _dispatch_publication(self, message: OutboxMessage) -> None:
         batch_id = int(message.aggregate_id)
-        events = await self._load_publication_events(batch_id)
-        if not events:
+        stored_events = await self._load_stored_publication_events(batch_id)
+        if not stored_events:
             msg = f"Publication batch {batch_id} has no events"
             raise LookupError(msg)
+        event_ids = [event.id for event in stored_events]
+        if self._publication_already_reconciled(stored_events):
+            return
+
+        reconciliation_chat_id = self._reconciliation_chat_id(message)
+        reconciliation_message_id = self._reconciliation_message_id(message)
+        if reconciliation_chat_id is not None and reconciliation_message_id is not None:
+            await self.publication_service.mark_publication_succeeded(
+                batch_id=batch_id,
+                event_ids=event_ids,
+                chat_id=reconciliation_chat_id,
+                message_id=reconciliation_message_id,
+            )
+            return
+
+        events = self._to_public_event_views(stored_events)
         if len(events) == 1:
             payload = self.publication_renderer.render_published_event_post(
                 bot_username=self.bot_username,
@@ -118,18 +175,46 @@ class OutboxProcessor:
                 chat_id=self.group_chat_id,
                 payload=payload,
             )
-        except Exception:
+        except PostingRightsMissingError as exc:
             await self.publication_service.mark_publication_failed(
                 batch_id=batch_id,
-                event_ids=[int(event.event_id) for event in events],
+                event_ids=event_ids,
             )
+            raise TerminalOutboxDispatchError(str(exc)) from exc
+        except Exception as exc:
+            await self.publication_service.mark_publication_failed(
+                batch_id=batch_id,
+                event_ids=event_ids,
+            )
+            raise TerminalOutboxDispatchError(
+                "Publication request failed before Telegram accepted the group post."
+            ) from exc
+        try:
+            await self.publication_service.mark_publication_succeeded(
+                batch_id=batch_id,
+                event_ids=event_ids,
+                chat_id=telegram_message.chat.id,
+                message_id=telegram_message.message_id,
+            )
+        except Exception:
+            deleted = False
+            try:
+                deleted = await self.group_publisher.delete_group_post(
+                    chat_id=telegram_message.chat.id,
+                    message_id=telegram_message.message_id,
+                )
+            except Exception:
+                deleted = False
+            if deleted is False:
+                raise RetryableOutboxDispatchError(
+                    "Publication was posted to Telegram but local persistence failed; "
+                    "reconciliation is required.",
+                    payload_updates={
+                        "reconciliation_chat_id": telegram_message.chat.id,
+                        "reconciliation_message_id": telegram_message.message_id,
+                    },
+                ) from None
             raise
-        await self.publication_service.mark_publication_succeeded(
-            batch_id=batch_id,
-            event_ids=[int(event.event_id) for event in events],
-            chat_id=telegram_message.chat.id,
-            message_id=telegram_message.message_id,
-        )
 
     async def _dispatch_notification(self, message: OutboxMessage) -> None:
         event = await self._load_event(int(message.payload["event_id"]))
@@ -151,9 +236,12 @@ class OutboxProcessor:
             event,
             details=message.payload.get("details"),
         )
-        await self.notifier.send_direct_message(telegram_user_id=telegram_user_id, text=text)
         if message.event_type != "event.announced":
-            await self._refresh_group_post(event)
+            try:
+                await self._refresh_group_post(event)
+            except PostingRightsMissingError:
+                pass
+        await self.notifier.send_direct_message(telegram_user_id=telegram_user_id, text=text)
 
     async def _refresh_group_post(self, event: StoredEvent) -> None:
         if (
@@ -163,9 +251,11 @@ class OutboxProcessor:
         ):
             return
 
-        events = await self._load_publication_events(event.publication_batch_id)
-        if not events:
+        stored_events = await self._load_stored_publication_events(event.publication_batch_id)
+        if not stored_events:
             return
+
+        events = self._to_public_event_views(stored_events)
 
         if len(events) == 1:
             payload = self.publication_renderer.render_published_event_post(
@@ -202,9 +292,9 @@ class OutboxProcessor:
                 raise LookupError(msg)
             return user
 
-    async def _load_publication_events(self, batch_id: int) -> list[PublicEventView]:
-        timezone = load_timezone(self.timezone_name)
+    async def _load_stored_publication_events(self, batch_id: int) -> list[StoredEvent]:
         async with self.session_factory() as session:
+            repository = EventRepository(session)
             stmt = (
                 select(EventOccurrenceModel)
                 .join(
@@ -218,22 +308,53 @@ class OutboxProcessor:
                 )
             )
             result = await session.execute(stmt)
-            models = result.scalars().all()
-            return [
-                PublicEventView(
-                    event_id=str(model.id),
-                    tea_name=model.tea_name,
-                    starts_at_local=model.starts_at.astimezone(timezone),
-                    cancel_deadline_at_local=model.cancel_deadline_at.astimezone(timezone),
-                    capacity=model.capacity,
-                    reserved_seats=model.reserved_seats,
-                    description=model.description,
-                    status=model.status,
-                    registration_open=model.status
-                    in {EventStatus.PUBLISHED_OPEN, EventStatus.PUBLISHED_FULL},
-                )
-                for model in models
-            ]
+            return [repository._to_stored_event(model) for model in result.scalars().all()]
+
+    def _to_public_event_views(self, events: list[StoredEvent]) -> list[PublicEventView]:
+        timezone = load_timezone(self.timezone_name)
+        return [
+            PublicEventView(
+                event_id=str(event.id),
+                tea_name=event.tea_name,
+                starts_at_local=event.starts_at.astimezone(timezone),
+                cancel_deadline_at_local=event.cancel_deadline_at.astimezone(timezone),
+                capacity=event.capacity,
+                reserved_seats=event.reserved_seats,
+                description=event.description,
+                status=event.status,
+                registration_open=event.status
+                in {EventStatus.PUBLISHED_OPEN, EventStatus.PUBLISHED_FULL},
+            )
+            for event in events
+        ]
+
+    @staticmethod
+    def _publication_already_reconciled(events: list[StoredEvent]) -> bool:
+        if not events:
+            return False
+        chat_ids = {event.telegram_group_chat_id for event in events}
+        message_ids = {event.telegram_group_message_id for event in events}
+        return (
+            None not in chat_ids
+            and None not in message_ids
+            and len(chat_ids) == 1
+            and len(message_ids) == 1
+            and all(event.published_at is not None for event in events)
+        )
+
+    @staticmethod
+    def _reconciliation_chat_id(message: OutboxMessage) -> int | None:
+        raw_value = message.payload.get("reconciliation_chat_id")
+        if raw_value is None:
+            return None
+        return int(raw_value)
+
+    @staticmethod
+    def _reconciliation_message_id(message: OutboxMessage) -> int | None:
+        raw_value = message.payload.get("reconciliation_message_id")
+        if raw_value is None:
+            return None
+        return int(raw_value)
 
     @staticmethod
     def _require_message_id(message: OutboxMessage) -> int:
@@ -278,6 +399,8 @@ class GroupPublisher(Protocol):
     async def send_group_post(
         self, *, chat_id: int, payload: TelegramGroupPostPayload
     ) -> Message: ...
+
+    async def delete_group_post(self, *, chat_id: int, message_id: int) -> bool: ...
 
     async def edit_group_post(
         self,

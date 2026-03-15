@@ -6,6 +6,7 @@ from html import escape
 from urllib.parse import quote
 
 from aiogram import Bot
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from aiogram.types import InlineKeyboardMarkup, Message
 
 from tea_party_reservation_bot.application.telegram import PublicEventView
@@ -13,6 +14,10 @@ from tea_party_reservation_bot.domain.events import EventPreview
 from tea_party_reservation_bot.infrastructure.telegram.deep_links import build_event_deep_link
 
 _TELEGRAM_MESSAGE_LIMIT = 4096
+
+
+class PostingRightsMissingError(RuntimeError):
+    pass
 
 
 def _ensure_message_length(text: str) -> str:
@@ -226,11 +231,15 @@ class AiogramGroupPublisher:
         self._bot = bot
 
     async def send_group_post(self, *, chat_id: int, payload: TelegramGroupPostPayload) -> Message:
-        return await self._bot.send_message(
-            chat_id=chat_id,
-            text=payload.text,
-            reply_markup=payload.reply_markup,
-        )
+        try:
+            return await self._bot.send_message(
+                chat_id=chat_id,
+                text=payload.text,
+                reply_markup=payload.reply_markup,
+            )
+        except TelegramForbiddenError as exc:
+            msg = "Missing rights to publish messages in the configured Telegram chat."
+            raise PostingRightsMissingError(msg) from exc
 
     async def edit_group_post(
         self,
@@ -239,16 +248,29 @@ class AiogramGroupPublisher:
         message_id: int,
         payload: TelegramGroupPostPayload,
     ) -> Message:
-        result = await self._bot.edit_message_text(
-            chat_id=chat_id,
-            message_id=message_id,
-            text=payload.text,
-            reply_markup=payload.reply_markup,
-        )
+        try:
+            result = await self._bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=message_id,
+                text=payload.text,
+                reply_markup=payload.reply_markup,
+            )
+        except TelegramForbiddenError as exc:
+            msg = "Missing rights to edit messages in the configured Telegram chat."
+            raise PostingRightsMissingError(msg) from exc
+        except TelegramBadRequest:
+            raise
         if isinstance(result, bool):
             msg = "Expected Telegram to return the edited message instance."
             raise RuntimeError(msg)
         return result
+
+    async def delete_group_post(self, *, chat_id: int, message_id: int) -> bool:
+        try:
+            return await self._bot.delete_message(chat_id=chat_id, message_id=message_id)
+        except TelegramForbiddenError as exc:
+            msg = "Missing rights to delete messages in the configured Telegram chat."
+            raise PostingRightsMissingError(msg) from exc
 
 
 class AiogramTelegramNotifier:
