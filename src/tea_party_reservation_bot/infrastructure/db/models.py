@@ -186,6 +186,17 @@ class NotificationPreferenceModel(TimestampedMixin, Base):
     new_events_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
 
+class SystemSettingsModel(TimestampedMixin, Base):
+    __tablename__ = "system_settings"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    default_cancel_deadline_offset_minutes: Mapped[int] = mapped_column(
+        Integer,
+        default=240,
+        nullable=False,
+    )
+
+
 class ProcessedCommandModel(Base):
     __tablename__ = "processed_commands"
     __table_args__ = (UniqueConstraint("source", "idempotency_key"),)
@@ -246,6 +257,7 @@ __all__ = [
     "ReservationStatus",
     "RoleAssignmentModel",
     "RoleModel",
+    "SystemSettingsModel",
     "UserModel",
     "WaitlistEntryModel",
     "WaitlistStatus",

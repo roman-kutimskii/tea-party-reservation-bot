@@ -13,6 +13,7 @@ from tea_party_reservation_bot.infrastructure.db.repositories import (
     PublicationRepository,
     RegistrationRepository,
     RoleRepository,
+    SystemSettingsRepository,
     UserRepository,
 )
 
@@ -23,6 +24,7 @@ class SqlAlchemyUnitOfWork:
     session: AsyncSession | None = field(default=None, init=False)
     users: UserRepository = field(init=False)
     roles: RoleRepository = field(init=False)
+    settings: SystemSettingsRepository = field(init=False)
     events: EventRepository = field(init=False)
     registrations: RegistrationRepository = field(init=False)
     publications: PublicationRepository = field(init=False)
@@ -35,6 +37,7 @@ class SqlAlchemyUnitOfWork:
         self.session = self.session_factory()
         self.users = UserRepository(self.session)
         self.roles = RoleRepository(self.session)
+        self.settings = SystemSettingsRepository(self.session)
         self.events = EventRepository(self.session)
         self.registrations = RegistrationRepository(self.session)
         self.publications = PublicationRepository(self.session)

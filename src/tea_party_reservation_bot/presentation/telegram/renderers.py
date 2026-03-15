@@ -5,7 +5,9 @@ from html import escape
 
 from tea_party_reservation_bot.application.telegram import (
     AdminEventView,
+    AdminRoleAssignmentView,
     EventRosterView,
+    ManagedSystemSettingsView,
     NotificationSettingsView,
     PublicEventView,
     RegistrationResult,
@@ -146,6 +148,28 @@ def render_admin_events(events: Sequence[AdminEventView]) -> str:
         "/event_capacity, /event_close, /event_reopen, /event_cancel, "
         "/event_add_confirmed, /event_add_waitlist, /event_remove, /event_move_confirmed, "
         "/event_move_waitlist."
+    )
+
+
+def render_admin_roles(assignments: Sequence[AdminRoleAssignmentView]) -> str:
+    if not assignments:
+        return "Админские роли пока никому не назначены. Команды: /grant_role, /revoke_role."
+    rows = [
+        f"- {escape(item.display_name)} ({item.telegram_user_id}): {', '.join(item.roles)}"
+        for item in assignments
+    ]
+    rows.append(
+        "Команды: /grant_role <telegram_user_id> <owner|manager>, "
+        "/revoke_role <telegram_user_id> <owner|manager>."
+    )
+    return "Роли администраторов:\n" + "\n".join(rows)
+
+
+def render_system_settings(settings: ManagedSystemSettingsView) -> str:
+    return (
+        "Настройки системы:\n"
+        f"Default deadline: {settings.default_cancel_deadline_offset_minutes} мин.\n"
+        "Команда: /set_default_deadline <минуты>."
     )
 
 

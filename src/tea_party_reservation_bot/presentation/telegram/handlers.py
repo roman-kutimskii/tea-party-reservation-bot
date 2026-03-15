@@ -11,9 +11,11 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message, User
 
 from tea_party_reservation_bot.application.telegram import (
+    ManagedSystemSettingsView,
     TelegramBotApplicationService,
     TelegramUserProfile,
 )
+from tea_party_reservation_bot.domain.enums import Permission
 from tea_party_reservation_bot.domain.events import EventPreview
 from tea_party_reservation_bot.domain.rbac import Actor
 from tea_party_reservation_bot.exceptions import (
@@ -39,6 +41,7 @@ from tea_party_reservation_bot.presentation.telegram.renderers import (
     render_admin_denied,
     render_admin_events,
     render_admin_preview,
+    render_admin_roles,
     render_batch_template,
     render_event_card,
     render_event_details,
@@ -50,6 +53,7 @@ from tea_party_reservation_bot.presentation.telegram.renderers import (
     render_registration_result,
     render_roster,
     render_single_event_template,
+    render_system_settings,
     render_unknown_text,
     render_welcome,
 )
@@ -346,7 +350,13 @@ def _register_admin_entry_handlers(
         except AuthorizationError:
             await message.answer(render_admin_denied(), reply_markup=visitor_menu_keyboard())
             return
-        await message.answer("Раздел администратора.", reply_markup=admin_menu_keyboard())
+        await message.answer(
+            "Раздел администратора.",
+            reply_markup=admin_menu_keyboard(
+                owner_controls=actor.can(Permission.MANAGE_ADMIN_ROLES)
+                or actor.can(Permission.MANAGE_SETTINGS)
+            ),
+        )
 
     @router.message(Command("new_event"))
     @router.message(F.text == "Создать событие")
@@ -398,9 +408,9 @@ def _register_admin_draft_handlers(
         mode = str(data.get("mode", "single"))
         try:
             previews = list(
-                deps.application_service.preview_batch(actor, text)
+                await deps.application_service.preview_batch(actor, text)
                 if mode == "batch"
-                else [deps.application_service.preview_single_event(actor, text)]
+                else [await deps.application_service.preview_single_event(actor, text)]
             )
         except (AuthorizationError, ValidationError) as exc:
             await message.answer(str(exc))
@@ -514,6 +524,87 @@ def _register_admin_event_handlers(  # noqa: PLR0915
         await message.answer(
             render_admin_events(events), reply_markup=admin_events_keyboard(events)
         )
+
+    @router.message(Command("admin_roles"))
+    @router.message(F.text == "Роли админов")
+    async def admin_roles(message: Message) -> None:
+        user = message.from_user
+        if user is None:
+            return
+        actor = await load_actor(user)
+        try:
+            assignments = await deps.application_service.list_admin_role_assignments(actor=actor)
+        except AuthorizationError:
+            await message.answer(render_admin_denied(), reply_markup=visitor_menu_keyboard())
+            return
+        await message.answer(render_admin_roles(assignments))
+
+    @router.message(Command("grant_role"))
+    async def grant_role(message: Message) -> None:
+        args = _extract_command_arguments(message.text, 2)
+        if args is None:
+            await message.answer("Формат: /grant_role <telegram_user_id> <owner|manager>")
+            return
+        telegram_user_id, role = args
+        await _handle_admin_command(
+            message,
+            lambda actor: deps.application_service.assign_admin_role(
+                actor=actor,
+                telegram_user_id=telegram_user_id,
+                role=role,
+            ),
+        )
+
+    @router.message(Command("revoke_role"))
+    async def revoke_role(message: Message) -> None:
+        args = _extract_command_arguments(message.text, 2)
+        if args is None:
+            await message.answer("Формат: /revoke_role <telegram_user_id> <owner|manager>")
+            return
+        telegram_user_id, role = args
+        await _handle_admin_command(
+            message,
+            lambda actor: deps.application_service.revoke_admin_role(
+                actor=actor,
+                telegram_user_id=telegram_user_id,
+                role=role,
+            ),
+        )
+
+    @router.message(Command("system_settings"))
+    @router.message(F.text == "Настройки системы")
+    async def system_settings(message: Message) -> None:
+        user = message.from_user
+        if user is None:
+            return
+        actor = await load_actor(user)
+        try:
+            settings = await deps.application_service.get_system_settings(actor=actor)
+        except AuthorizationError:
+            await message.answer(render_admin_denied(), reply_markup=visitor_menu_keyboard())
+            return
+        await message.answer(render_system_settings(settings))
+
+    @router.message(Command("set_default_deadline"))
+    async def set_default_deadline(message: Message) -> None:
+        args = _extract_command_arguments(message.text, 1)
+        if args is None:
+            await message.answer("Формат: /set_default_deadline <минуты>")
+            return
+        actor_settings: ManagedSystemSettingsView | None = None
+
+        async def operation(actor: Actor) -> str:
+            nonlocal actor_settings
+            actor_settings = (
+                await deps.application_service.set_default_cancel_deadline_offset_minutes(
+                    actor=actor,
+                    minutes=args[0],
+                )
+            )
+            assert actor_settings is not None
+            return render_system_settings(actor_settings)
+
+        await _handle_admin_command(message, operation)
 
     @router.callback_query(F.data.startswith("admin:roster:"))
     async def admin_roster(callback: CallbackQuery) -> None:

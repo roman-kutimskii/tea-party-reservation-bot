@@ -4,6 +4,7 @@ import asyncio
 import sys
 import warnings
 from collections.abc import AsyncIterator, Callable, Iterator
+from typing import Any, cast
 
 import pytest
 import pytest_asyncio
@@ -13,17 +14,20 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from testcontainers.postgres import PostgresContainer
 
+from tea_party_reservation_bot.application.contracts import UnitOfWork
 from tea_party_reservation_bot.application.dto import TelegramProfile
 from tea_party_reservation_bot.application.security import DomainAuthorizationService
 from tea_party_reservation_bot.application.services import (
     AdminAccessService,
     AdminEventService,
+    AdminRoleManagementService,
     EventPersistenceService,
     EventQueryService,
     NotificationPreferenceService,
     PublicationService,
     RegistrationService,
     SystemClock,
+    SystemSettingsService,
     UserApplicationService,
 )
 from tea_party_reservation_bot.config.settings import DatabaseSettings
@@ -90,10 +94,18 @@ async def db_cleanup(session_factory: async_sessionmaker[AsyncSession]) -> Async
             "event_occurrences",
             "publication_batches",
             "notification_preferences",
+            "system_settings",
             "role_assignments",
             "users",
         ]:
             await session.execute(text(f"TRUNCATE TABLE {table} RESTART IDENTITY CASCADE"))
+        await session.execute(
+            text(
+                "INSERT INTO system_settings "
+                "(id, default_cancel_deadline_offset_minutes, created_at, updated_at) "
+                "VALUES (1, 240, now(), now())"
+            )
+        )
         await session.commit()
     yield
 
@@ -107,7 +119,9 @@ def uow_factory(
 
 @pytest_asyncio.fixture
 async def seed_admin(session_factory: async_sessionmaker[AsyncSession], db_cleanup: None) -> None:
-    user_service = UserApplicationService(lambda: SqlAlchemyUnitOfWork(session_factory))
+    user_service = UserApplicationService(
+        cast(Any, lambda: cast(UnitOfWork, SqlAlchemyUnitOfWork(session_factory)))
+    )
     admin = await user_service.ensure_user(
         TelegramProfile(
             telegram_user_id=1000,
@@ -130,13 +144,16 @@ def services(
 ) -> dict[str, object]:
     auth = DomainAuthorizationService()
     clock = SystemClock()
+    typed_uow_factory = cast(Any, uow_factory)
     return {
-        "user": UserApplicationService(uow_factory),
-        "admin_access": AdminAccessService(uow_factory),
-        "events": EventPersistenceService(uow_factory, auth, "Europe/Moscow"),
-        "publication": PublicationService(uow_factory, auth, clock),
-        "query": EventQueryService(uow_factory, auth, clock),
-        "admin_events": AdminEventService(uow_factory, auth, clock),
-        "notifications": NotificationPreferenceService(uow_factory),
-        "registration": RegistrationService(uow_factory, clock, auth),
+        "user": UserApplicationService(typed_uow_factory),
+        "admin_access": AdminAccessService(typed_uow_factory),
+        "admin_roles": AdminRoleManagementService(typed_uow_factory, auth),
+        "events": EventPersistenceService(typed_uow_factory, auth, "Europe/Moscow"),
+        "publication": PublicationService(typed_uow_factory, auth, clock),
+        "query": EventQueryService(typed_uow_factory, auth, clock),
+        "admin_events": AdminEventService(typed_uow_factory, auth, clock),
+        "system_settings": SystemSettingsService(typed_uow_factory, auth),
+        "notifications": NotificationPreferenceService(typed_uow_factory),
+        "registration": RegistrationService(typed_uow_factory, clock, auth),
     }

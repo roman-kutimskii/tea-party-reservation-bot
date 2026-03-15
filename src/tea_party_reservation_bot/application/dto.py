@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
+from tea_party_reservation_bot.domain.enums import AdminRole
+
 
 @dataclass(slots=True, frozen=True)
 class OutboxMessage:
@@ -32,6 +34,20 @@ class StoredUser:
     username: str | None
     first_name: str | None
     last_name: str | None
+
+
+@dataclass(slots=True, frozen=True)
+class AdminRoleAssignmentView:
+    telegram_user_id: int
+    username: str | None
+    first_name: str | None
+    last_name: str | None
+    roles: frozenset[AdminRole]
+
+
+@dataclass(slots=True, frozen=True)
+class SystemSettingsView:
+    default_cancel_deadline_offset_minutes: int
 
 
 @dataclass(slots=True, frozen=True)

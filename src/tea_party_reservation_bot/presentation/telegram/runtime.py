@@ -12,8 +12,9 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from tea_party_reservation_bot.application.contracts import UnitOfWork
 from tea_party_reservation_bot.application.security import DomainAuthorizationService
 from tea_party_reservation_bot.application.services import (
-    AdminEventService,
     AdminAuditService,
+    AdminEventService,
+    AdminRoleManagementService,
     EventDraftingService,
     EventPersistenceService,
     EventQueryService,
@@ -21,19 +22,21 @@ from tea_party_reservation_bot.application.services import (
     PublicationService,
     RegistrationService,
     SystemClock,
+    SystemSettingsService,
     UserApplicationService,
 )
 from tea_party_reservation_bot.application.telegram import TelegramBotApplicationService
 from tea_party_reservation_bot.config.settings import Settings
-from tea_party_reservation_bot.domain.parsing import AdminEventInputParser
 from tea_party_reservation_bot.infrastructure.db import SqlAlchemyUnitOfWork, create_session_factory
 from tea_party_reservation_bot.infrastructure.telegram.backends import (
     SqlAlchemyAdminEventCommandPort,
+    SqlAlchemyAdminRoleManagementPort,
     SqlAlchemyAdminRoleRepository,
     SqlAlchemyEventReadModelPort,
     SqlAlchemyNotificationPreferencePort,
     SqlAlchemyPublicationWorkflowPort,
     SqlAlchemyRegistrationCommandPort,
+    SqlAlchemySystemSettingsManagementPort,
     SqlAlchemyTelegramUserSyncPort,
 )
 from tea_party_reservation_bot.infrastructure.telegram.publication import (
@@ -73,6 +76,7 @@ class BotRuntime:
             return cast(UnitOfWork, SqlAlchemyUnitOfWork(session_factory))
 
         event_query_service = EventQueryService(uow_factory, authorization_service, clock)
+        system_settings_service = SystemSettingsService(uow_factory, authorization_service)
         event_read_model = SqlAlchemyEventReadModelPort(
             session_factory=session_factory,
             timezone=self.settings.app.timezone,
@@ -81,9 +85,7 @@ class BotRuntime:
             roles=SqlAlchemyAdminRoleRepository(session_factory),
             authorization_service=authorization_service,
             drafting_service=EventDraftingService(
-                parser=AdminEventInputParser(
-                    default_cancel_deadline_offset_minutes=self.settings.app.default_cancel_deadline_offset_minutes
-                ),
+                default_settings_service=system_settings_service,
                 authorization_service=authorization_service,
                 timezone_name=self.settings.app.timezone_name,
             ),
@@ -109,6 +111,12 @@ class BotRuntime:
             admin_commands=SqlAlchemyAdminEventCommandPort(
                 service=AdminEventService(uow_factory, authorization_service, clock),
                 timezone=self.settings.app.timezone,
+            ),
+            admin_role_management=SqlAlchemyAdminRoleManagementPort(
+                AdminRoleManagementService(uow_factory, authorization_service)
+            ),
+            system_settings_management=SqlAlchemySystemSettingsManagementPort(
+                system_settings_service
             ),
         )
         me = await bot.get_me()

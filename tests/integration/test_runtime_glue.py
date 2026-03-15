@@ -8,19 +8,21 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from tea_party_reservation_bot.application.contracts import UnitOfWork
+from tea_party_reservation_bot.application.security import DomainAuthorizationService
 from tea_party_reservation_bot.application.services import (
     AdminAccessService,
     AdminAuditService,
+    AdminRoleManagementService,
     EventPersistenceService,
     EventQueryService,
     NotificationPreferenceService,
     PublicationService,
     RegistrationService,
     SystemClock,
+    SystemSettingsService,
     UserApplicationService,
 )
-from tea_party_reservation_bot.application.security import DomainAuthorizationService
-from tea_party_reservation_bot.application.contracts import UnitOfWork
 from tea_party_reservation_bot.application.telegram import (
     TelegramBotApplicationService,
     TelegramUserProfile,
@@ -35,11 +37,13 @@ from tea_party_reservation_bot.infrastructure.db.models import (
 )
 from tea_party_reservation_bot.infrastructure.db.uow import SqlAlchemyUnitOfWork
 from tea_party_reservation_bot.infrastructure.telegram.backends import (
+    SqlAlchemyAdminRoleManagementPort,
     SqlAlchemyAdminRoleRepository,
     SqlAlchemyEventReadModelPort,
     SqlAlchemyNotificationPreferencePort,
     SqlAlchemyPublicationWorkflowPort,
     SqlAlchemyRegistrationCommandPort,
+    SqlAlchemySystemSettingsManagementPort,
     SqlAlchemyTelegramUserSyncPort,
 )
 from tea_party_reservation_bot.infrastructure.telegram.publication import (
@@ -385,11 +389,39 @@ async def test_admin_sensitive_reads_are_audited(
         notifications=cast(Any, object()),
         publication=cast(Any, object()),
         admin_commands=cast(Any, object()),
+        admin_role_management=cast(
+            Any,
+            SqlAlchemyAdminRoleManagementPort(
+                AdminRoleManagementService(
+                    cast(
+                        Any,
+                        cast(
+                            "Any", lambda: cast(UnitOfWork, SqlAlchemyUnitOfWork(session_factory))
+                        ),
+                    ),
+                    auth,
+                )
+            ),
+        ),
+        system_settings_management=cast(
+            Any,
+            SqlAlchemySystemSettingsManagementPort(
+                SystemSettingsService(
+                    cast(
+                        Any,
+                        cast(
+                            "Any", lambda: cast(UnitOfWork, SqlAlchemyUnitOfWork(session_factory))
+                        ),
+                    ),
+                    auth,
+                )
+            ),
+        ),
     )
 
     start = datetime.now(tz=UTC) + timedelta(days=3)
     draft = EventDraft(
-        tea_name="Бай Му Дань",
+        tea_name="Bai Mu Dan",
         description="Проверка аудита",
         starts_at_local=start.astimezone(timezone),
         starts_at_utc=start,

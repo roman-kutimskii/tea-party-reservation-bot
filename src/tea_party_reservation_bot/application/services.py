@@ -10,15 +10,18 @@ from sqlalchemy.exc import IntegrityError
 from tea_party_reservation_bot.application.contracts import AuthorizationService, Clock, UnitOfWork
 from tea_party_reservation_bot.application.dto import (
     ActiveRegistrationView,
+    AdminRoleAssignmentView,
     NotificationPreferenceView,
     OutboxMessage,
     PublicationIntent,
     RosterEntryView,
     StoredEvent,
     StoredUser,
+    SystemSettingsView,
     TelegramProfile,
 )
 from tea_party_reservation_bot.domain.enums import (
+    AdminRole,
     EventStatus,
     Permission,
     PublicationBatchStatus,
@@ -95,13 +98,98 @@ IdempotentResult = (
 
 @dataclass(slots=True)
 class EventDraftingService:
-    parser: AdminEventInputParser
+    default_settings_service: Any
     authorization_service: AuthorizationService
     timezone_name: str
 
-    def preview_from_text(self, actor: Actor, raw_text: str) -> list[EventPreview]:
+    async def preview_from_text(self, actor: Actor, raw_text: str) -> list[EventPreview]:
         self.authorization_service.require(actor, Permission.CREATE_DRAFT)
-        return self.parser.parse_many(raw_text, timezone_name=self.timezone_name)
+        settings = await self.default_settings_service.get_settings()
+        parser = AdminEventInputParser(
+            default_cancel_deadline_offset_minutes=settings.default_cancel_deadline_offset_minutes
+        )
+        return parser.parse_many(raw_text, timezone_name=self.timezone_name)
+
+
+@dataclass(slots=True)
+class SystemSettingsService:
+    uow_factory: Callable[[], UnitOfWork]
+    authorization_service: AuthorizationService
+
+    async def get_settings(self, actor: Actor | None = None) -> SystemSettingsView:
+        if actor is not None:
+            self.authorization_service.require(actor, Permission.MANAGE_SETTINGS)
+        async with self.uow_factory() as uow:
+            return await uow.settings.get()
+
+    async def set_default_cancel_deadline_offset_minutes(
+        self, *, actor: Actor, minutes: int
+    ) -> SystemSettingsView:
+        self.authorization_service.require(actor, Permission.MANAGE_SETTINGS)
+        if minutes < 0:
+            raise ApplicationError("Значение должно быть неотрицательным.")
+        async with self.uow_factory() as uow:
+            admin_user = await _require_existing_user(uow, actor.telegram_user_id)
+            settings = await uow.settings.set_default_cancel_deadline_offset_minutes(minutes)
+            await uow.audit_log.append(
+                actor_user_id=admin_user.id,
+                action="system_settings_updated",
+                target_type="system_settings",
+                target_id="singleton",
+                payload_json={"default_cancel_deadline_offset_minutes": minutes},
+            )
+            return settings
+
+
+@dataclass(slots=True)
+class AdminRoleManagementService:
+    uow_factory: Callable[[], UnitOfWork]
+    authorization_service: AuthorizationService
+
+    async def list_assignments(self, actor: Actor) -> list[AdminRoleAssignmentView]:
+        self.authorization_service.require(actor, Permission.MANAGE_ADMIN_ROLES)
+        async with self.uow_factory() as uow:
+            return await uow.roles.list_admin_role_assignments()
+
+    async def assign_role(self, *, actor: Actor, telegram_user_id: int, role: AdminRole) -> str:
+        self.authorization_service.require(actor, Permission.MANAGE_ADMIN_ROLES)
+        async with self.uow_factory() as uow:
+            admin_user = await _require_existing_user(uow, actor.telegram_user_id)
+            target_user = await _require_existing_user(uow, telegram_user_id)
+            assigned = await uow.roles.assign_role(user_id=target_user.id, role=role)
+            if not assigned:
+                return f"Роль {role.value} уже назначена пользователю {telegram_user_id}."
+            await uow.audit_log.append(
+                actor_user_id=admin_user.id,
+                action="admin_role_assigned",
+                target_type="user",
+                target_id=str(target_user.id),
+                payload_json={"telegram_user_id": telegram_user_id, "role": role.value},
+            )
+            return f"Роль {role.value} назначена пользователю {telegram_user_id}."
+
+    async def revoke_role(self, *, actor: Actor, telegram_user_id: int, role: AdminRole) -> str:
+        self.authorization_service.require(actor, Permission.MANAGE_ADMIN_ROLES)
+        async with self.uow_factory() as uow:
+            admin_user = await _require_existing_user(uow, actor.telegram_user_id)
+            target_user = await _require_existing_user(uow, telegram_user_id)
+            if role == AdminRole.OWNER:
+                if telegram_user_id == actor.telegram_user_id:
+                    raise ConflictError("Нельзя снять роль owner с самого себя.")
+                owner_count = await uow.roles.count_users_with_role(AdminRole.OWNER)
+                if owner_count <= 1:
+                    raise ConflictError("В системе должен оставаться хотя бы один owner.")
+            revoked = await uow.roles.revoke_role(user_id=target_user.id, role=role)
+            if not revoked:
+                return f"У пользователя {telegram_user_id} нет роли {role.value}."
+            await uow.audit_log.append(
+                actor_user_id=admin_user.id,
+                action="admin_role_revoked",
+                target_type="user",
+                target_id=str(target_user.id),
+                payload_json={"telegram_user_id": telegram_user_id, "role": role.value},
+            )
+            return f"Роль {role.value} снята у пользователя {telegram_user_id}."
 
 
 @dataclass(slots=True)

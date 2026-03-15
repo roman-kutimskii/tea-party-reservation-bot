@@ -6,6 +6,7 @@ from typing import Any, Protocol, Self
 
 from tea_party_reservation_bot.application.dto import (
     ActiveRegistrationView,
+    AdminRoleAssignmentView,
     NotificationPreferenceView,
     OutboxMessage,
     ProcessedCommandResult,
@@ -13,6 +14,7 @@ from tea_party_reservation_bot.application.dto import (
     RosterEntryView,
     StoredEvent,
     StoredUser,
+    SystemSettingsView,
     TelegramProfile,
 )
 from tea_party_reservation_bot.domain.enums import AdminRole, Permission
@@ -37,6 +39,17 @@ class UserRepository(Protocol):
 class AdminRoleRepository(Protocol):
     async def get_roles_for_telegram_user(self, telegram_user_id: int) -> frozenset[AdminRole]: ...
     async def get_actor(self, telegram_user_id: int) -> Actor: ...
+    async def list_admin_role_assignments(self) -> list[AdminRoleAssignmentView]: ...
+    async def assign_role(self, *, user_id: int, role: AdminRole) -> bool: ...
+    async def revoke_role(self, *, user_id: int, role: AdminRole) -> bool: ...
+    async def count_users_with_role(self, role: AdminRole) -> int: ...
+
+
+class SystemSettingsRepository(Protocol):
+    async def get(self) -> SystemSettingsView: ...
+    async def set_default_cancel_deadline_offset_minutes(
+        self, minutes: int
+    ) -> SystemSettingsView: ...
 
 
 class EventDraftRepository(Protocol):
@@ -138,6 +151,7 @@ class AuditLogRepository(Protocol):
 class UnitOfWork(Protocol):
     users: UserRepository
     roles: AdminRoleRepository
+    settings: SystemSettingsRepository
     events: EventStore
     registrations: RegistrationRepository
     publications: PublicationRepository

@@ -101,6 +101,18 @@ class EventRosterView:
 
 
 @dataclass(slots=True, frozen=True)
+class AdminRoleAssignmentView:
+    telegram_user_id: int
+    display_name: str
+    roles: Sequence[str]
+
+
+@dataclass(slots=True, frozen=True)
+class ManagedSystemSettingsView:
+    default_cancel_deadline_offset_minutes: int
+
+
+@dataclass(slots=True, frozen=True)
 class PublicationReceipt:
     accepted: bool
     message: str
@@ -203,6 +215,22 @@ class AdminEventCommandPort(Protocol):
     ) -> str: ...
 
 
+class AdminRoleManagementPort(Protocol):
+    async def list_assignments(self, *, actor: Actor) -> Sequence[AdminRoleAssignmentView]: ...
+
+    async def assign_role(self, *, actor: Actor, telegram_user_id: str, role: str) -> str: ...
+
+    async def revoke_role(self, *, actor: Actor, telegram_user_id: str, role: str) -> str: ...
+
+
+class SystemSettingsManagementPort(Protocol):
+    async def get_settings(self, *, actor: Actor) -> ManagedSystemSettingsView: ...
+
+    async def set_default_cancel_deadline_offset_minutes(
+        self, *, actor: Actor, minutes: str
+    ) -> ManagedSystemSettingsView: ...
+
+
 @dataclass(slots=True)
 class TelegramBotApplicationService:
     roles: AdminRoleRepository
@@ -215,6 +243,8 @@ class TelegramBotApplicationService:
     notifications: NotificationPreferencePort
     publication: PublicationWorkflowPort
     admin_commands: AdminEventCommandPort
+    admin_role_management: AdminRoleManagementPort
+    system_settings_management: SystemSettingsManagementPort
 
     async def sync_profile(self, profile: TelegramUserProfile) -> Actor:
         await self.user_sync.upsert_user(profile)
@@ -298,11 +328,11 @@ class TelegramBotApplicationService:
         )
         return roster
 
-    def preview_single_event(self, actor: Actor, raw_text: str) -> EventPreview:
-        return self.drafting_service.preview_from_text(actor, raw_text)[0]
+    async def preview_single_event(self, actor: Actor, raw_text: str) -> EventPreview:
+        return (await self.drafting_service.preview_from_text(actor, raw_text))[0]
 
-    def preview_batch(self, actor: Actor, raw_text: str) -> Sequence[EventPreview]:
-        return self.drafting_service.preview_from_text(actor, raw_text)
+    async def preview_batch(self, actor: Actor, raw_text: str) -> Sequence[EventPreview]:
+        return await self.drafting_service.preview_from_text(actor, raw_text)
 
     def ensure_admin(self, actor: Actor) -> None:
         self.authorization_service.require(actor, Permission.VIEW_EVENTS)
@@ -310,7 +340,7 @@ class TelegramBotApplicationService:
     async def publish_single_event(
         self, *, actor: Actor, raw_text: str, idempotency_key: str
     ) -> PublicationReceipt:
-        preview = self.preview_single_event(actor, raw_text)
+        preview = await self.preview_single_event(actor, raw_text)
         return await self.publication.publish_single(
             actor=actor,
             preview=preview,
@@ -320,7 +350,7 @@ class TelegramBotApplicationService:
     async def publish_batch_events(
         self, *, actor: Actor, raw_text: str, idempotency_key: str
     ) -> PublicationReceipt:
-        previews = self.preview_batch(actor, raw_text)
+        previews = await self.preview_batch(actor, raw_text)
         return await self.publication.publish_batch(
             actor=actor,
             previews=previews,
@@ -398,4 +428,34 @@ class TelegramBotApplicationService:
             event_id=event_id,
             telegram_user_id=telegram_user_id,
             target=target,
+        )
+
+    async def list_admin_role_assignments(
+        self, *, actor: Actor
+    ) -> Sequence[AdminRoleAssignmentView]:
+        return await self.admin_role_management.list_assignments(actor=actor)
+
+    async def assign_admin_role(self, *, actor: Actor, telegram_user_id: str, role: str) -> str:
+        return await self.admin_role_management.assign_role(
+            actor=actor,
+            telegram_user_id=telegram_user_id,
+            role=role,
+        )
+
+    async def revoke_admin_role(self, *, actor: Actor, telegram_user_id: str, role: str) -> str:
+        return await self.admin_role_management.revoke_role(
+            actor=actor,
+            telegram_user_id=telegram_user_id,
+            role=role,
+        )
+
+    async def get_system_settings(self, *, actor: Actor) -> ManagedSystemSettingsView:
+        return await self.system_settings_management.get_settings(actor=actor)
+
+    async def set_default_cancel_deadline_offset_minutes(
+        self, *, actor: Actor, minutes: str
+    ) -> ManagedSystemSettingsView:
+        return await self.system_settings_management.set_default_cancel_deadline_offset_minutes(
+            actor=actor,
+            minutes=minutes,
         )

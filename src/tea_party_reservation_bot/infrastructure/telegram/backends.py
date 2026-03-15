@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, tzinfo
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -11,18 +12,23 @@ from tea_party_reservation_bot.application.contracts import AdminRoleRepository
 from tea_party_reservation_bot.application.dto import TelegramProfile
 from tea_party_reservation_bot.application.services import (
     AdminEventService,
+    AdminRoleManagementService,
     EventPersistenceService,
     EventQueryService,
     NotificationPreferenceService,
     PublicationService,
     RegistrationService,
+    SystemSettingsService,
     UserApplicationService,
 )
 from tea_party_reservation_bot.application.telegram import (
     AdminEventCommandPort,
     AdminEventView,
+    AdminRoleAssignmentView,
+    AdminRoleManagementPort,
     EventReadModelPort,
     EventRosterView,
+    ManagedSystemSettingsView,
     NotificationPreferencePort,
     NotificationSettingsView,
     ParticipantView,
@@ -31,6 +37,7 @@ from tea_party_reservation_bot.application.telegram import (
     PublicEventView,
     RegistrationCommandPort,
     RegistrationResult,
+    SystemSettingsManagementPort,
     TelegramUserProfile,
     TelegramUserSyncPort,
     UserRegistrationView,
@@ -69,6 +76,15 @@ def _display_name(user: UserModel) -> str:
     return full_name or f"id:{user.telegram_user_id}"
 
 
+def _display_name_from_parts(
+    *, telegram_user_id: int, username: str | None, first_name: str | None, last_name: str | None
+) -> str:
+    if username:
+        return f"@{username}"
+    full_name = " ".join(part for part in [first_name, last_name] if part)
+    return full_name or f"id:{telegram_user_id}"
+
+
 def _parse_datetime(value: str, timezone: tzinfo) -> datetime:
     try:
         date_part, time_part = value.strip().split(maxsplit=1)
@@ -92,6 +108,23 @@ def _parse_telegram_user_id(raw_telegram_user_id: str) -> int:
         return int(raw_telegram_user_id)
     except ValueError as exc:
         raise ApplicationError("Некорректный telegram_user_id.") from exc
+
+
+def _parse_admin_role(raw_role: str) -> AdminRole:
+    try:
+        return AdminRole(raw_role.strip().lower())
+    except ValueError as exc:
+        raise ApplicationError("Роль должна быть owner или manager.") from exc
+
+
+def _parse_non_negative_int(raw_value: str, field_name: str) -> int:
+    try:
+        value = int(raw_value)
+    except ValueError as exc:
+        raise ApplicationError(f"Некорректное значение для {field_name}.") from exc
+    if value < 0:
+        raise ApplicationError(f"{field_name} должно быть неотрицательным.")
+    return value
 
 
 @dataclass(slots=True)
@@ -122,6 +155,22 @@ class SqlAlchemyAdminRoleRepository(AdminRoleRepository):
             telegram_user_id=telegram_user_id,
             roles=RoleSet(await self.get_roles_for_telegram_user(telegram_user_id)),
         )
+
+    async def list_admin_role_assignments(self) -> list[Any]:
+        async with self.session_factory() as session:
+            return await RoleRepository(session).list_admin_role_assignments()
+
+    async def assign_role(self, *, user_id: int, role: AdminRole) -> bool:
+        async with self.session_factory() as session:
+            return await RoleRepository(session).assign_role(user_id=user_id, role=role)
+
+    async def revoke_role(self, *, user_id: int, role: AdminRole) -> bool:
+        async with self.session_factory() as session:
+            return await RoleRepository(session).revoke_role(user_id=user_id, role=role)
+
+    async def count_users_with_role(self, role: AdminRole) -> int:
+        async with self.session_factory() as session:
+            return await RoleRepository(session).count_users_with_role(role)
 
 
 @dataclass(slots=True)
@@ -499,3 +548,60 @@ class SqlAlchemyAdminEventCommandPort(AdminEventCommandPort):
             target=target,
         )
         return result.message
+
+
+@dataclass(slots=True)
+class SqlAlchemyAdminRoleManagementPort(AdminRoleManagementPort):
+    service: AdminRoleManagementService
+
+    async def list_assignments(self, *, actor: Actor) -> Sequence[AdminRoleAssignmentView]:
+        assignments = await self.service.list_assignments(actor)
+        return tuple(
+            AdminRoleAssignmentView(
+                telegram_user_id=item.telegram_user_id,
+                display_name=_display_name_from_parts(
+                    telegram_user_id=item.telegram_user_id,
+                    username=item.username,
+                    first_name=item.first_name,
+                    last_name=item.last_name,
+                ),
+                roles=tuple(sorted(role.value for role in item.roles)),
+            )
+            for item in assignments
+        )
+
+    async def assign_role(self, *, actor: Actor, telegram_user_id: str, role: str) -> str:
+        return await self.service.assign_role(
+            actor=actor,
+            telegram_user_id=_parse_telegram_user_id(telegram_user_id),
+            role=_parse_admin_role(role),
+        )
+
+    async def revoke_role(self, *, actor: Actor, telegram_user_id: str, role: str) -> str:
+        return await self.service.revoke_role(
+            actor=actor,
+            telegram_user_id=_parse_telegram_user_id(telegram_user_id),
+            role=_parse_admin_role(role),
+        )
+
+
+@dataclass(slots=True)
+class SqlAlchemySystemSettingsManagementPort(SystemSettingsManagementPort):
+    service: SystemSettingsService
+
+    async def get_settings(self, *, actor: Actor) -> ManagedSystemSettingsView:
+        settings = await self.service.get_settings(actor)
+        return ManagedSystemSettingsView(
+            default_cancel_deadline_offset_minutes=settings.default_cancel_deadline_offset_minutes
+        )
+
+    async def set_default_cancel_deadline_offset_minutes(
+        self, *, actor: Actor, minutes: str
+    ) -> ManagedSystemSettingsView:
+        settings = await self.service.set_default_cancel_deadline_offset_minutes(
+            actor=actor,
+            minutes=_parse_non_negative_int(minutes, "default deadline"),
+        )
+        return ManagedSystemSettingsView(
+            default_cancel_deadline_offset_minutes=settings.default_cancel_deadline_offset_minutes
+        )

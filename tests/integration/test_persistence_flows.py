@@ -12,15 +12,17 @@ from tea_party_reservation_bot.application.dto import TelegramProfile
 from tea_party_reservation_bot.application.services import (
     AdminAccessService,
     AdminEventService,
+    AdminRoleManagementService,
     EventPersistenceService,
     EventQueryService,
     NotificationPreferenceService,
     PublicationService,
     RegistrationResult,
     RegistrationService,
+    SystemSettingsService,
     UserApplicationService,
 )
-from tea_party_reservation_bot.domain.enums import CancelDeadlineSource, EventStatus
+from tea_party_reservation_bot.domain.enums import AdminRole, CancelDeadlineSource, EventStatus
 from tea_party_reservation_bot.domain.events import EventDraft
 from tea_party_reservation_bot.exceptions import ConflictError
 from tea_party_reservation_bot.infrastructure.db.models import (
@@ -431,3 +433,34 @@ async def test_admin_can_manage_participants_and_cancel_event(
         assert "waitlist.promoted" in outbox_types
         assert "waitlist.cancelled" in outbox_types
         assert "event.cancelled" in outbox_types
+
+
+@pytest.mark.asyncio
+async def test_owner_can_manage_admin_roles_and_system_settings(
+    services: dict[str, object],
+) -> None:
+    user_service = cast(UserApplicationService, services["user"])
+    admin_access = cast(AdminAccessService, services["admin_access"])
+    admin_roles = cast(AdminRoleManagementService, services["admin_roles"])
+    system_settings = cast(SystemSettingsService, services["system_settings"])
+
+    await user_service.ensure_user(
+        TelegramProfile(
+            telegram_user_id=9001, username="manager1", first_name="Manager", last_name=None
+        )
+    )
+    actor = await admin_access.load_actor(1000)
+
+    assigned = await admin_roles.assign_role(
+        actor=actor, telegram_user_id=9001, role=AdminRole.MANAGER
+    )
+    settings = await system_settings.set_default_cancel_deadline_offset_minutes(
+        actor=actor, minutes=180
+    )
+    assignments = await admin_roles.list_assignments(actor)
+
+    assert "manager" in assigned
+    assert settings.default_cancel_deadline_offset_minutes == 180
+    assert any(
+        item.telegram_user_id == 9001 and AdminRole.MANAGER in item.roles for item in assignments
+    )

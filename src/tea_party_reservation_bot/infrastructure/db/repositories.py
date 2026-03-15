@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from tea_party_reservation_bot.application.dto import (
     ActiveRegistrationView,
+    AdminRoleAssignmentView,
     NotificationPreferenceView,
     OutboxMessage,
     ProcessedCommandResult,
@@ -19,6 +20,7 @@ from tea_party_reservation_bot.application.dto import (
     RosterEntryView,
     StoredEvent,
     StoredUser,
+    SystemSettingsView,
     TelegramProfile,
 )
 from tea_party_reservation_bot.domain.enums import (
@@ -41,6 +43,7 @@ from tea_party_reservation_bot.infrastructure.db.models import (
     ReservationModel,
     RoleAssignmentModel,
     RoleModel,
+    SystemSettingsModel,
     UserModel,
     WaitlistEntryModel,
 )
@@ -130,6 +133,110 @@ class RoleRepository:
             telegram_user_id=telegram_user_id,
             roles=RoleSet(await self.get_roles_for_telegram_user(telegram_user_id)),
         )
+
+    async def list_admin_role_assignments(self) -> list[AdminRoleAssignmentView]:
+        stmt = (
+            select(UserModel, RoleModel.code)
+            .join(RoleAssignmentModel, RoleAssignmentModel.user_id == UserModel.id)
+            .join(RoleModel, RoleModel.id == RoleAssignmentModel.role_id)
+            .order_by(UserModel.telegram_user_id.asc(), RoleModel.code.asc())
+        )
+        result = await self.session.execute(stmt)
+        assignments: dict[int, AdminRoleAssignmentView] = {}
+        for user, role_code in result.all():
+            current = assignments.get(user.id)
+            role = AdminRole(role_code)
+            if current is None:
+                assignments[user.id] = AdminRoleAssignmentView(
+                    telegram_user_id=user.telegram_user_id,
+                    username=user.username,
+                    first_name=user.first_name,
+                    last_name=user.last_name,
+                    roles=frozenset({role}),
+                )
+                continue
+            assignments[user.id] = AdminRoleAssignmentView(
+                telegram_user_id=current.telegram_user_id,
+                username=current.username,
+                first_name=current.first_name,
+                last_name=current.last_name,
+                roles=frozenset({*current.roles, role}),
+            )
+        return list(assignments.values())
+
+    async def assign_role(self, *, user_id: int, role: AdminRole) -> bool:
+        role_id = await self.session.scalar(
+            select(RoleModel.id).where(RoleModel.code == role.value)
+        )
+        if role_id is None:
+            msg = f"Role {role.value} not found"
+            raise LookupError(msg)
+        existing = await self.session.scalar(
+            select(RoleAssignmentModel.id).where(
+                RoleAssignmentModel.user_id == user_id,
+                RoleAssignmentModel.role_id == role_id,
+            )
+        )
+        if existing is not None:
+            return False
+        self.session.add(RoleAssignmentModel(user_id=user_id, role_id=role_id))
+        await self.session.flush()
+        return True
+
+    async def revoke_role(self, *, user_id: int, role: AdminRole) -> bool:
+        role_id = await self.session.scalar(
+            select(RoleModel.id).where(RoleModel.code == role.value)
+        )
+        if role_id is None:
+            msg = f"Role {role.value} not found"
+            raise LookupError(msg)
+        assignment = await self.session.scalar(
+            select(RoleAssignmentModel).where(
+                RoleAssignmentModel.user_id == user_id,
+                RoleAssignmentModel.role_id == role_id,
+            )
+        )
+        if assignment is None:
+            return False
+        await self.session.delete(assignment)
+        await self.session.flush()
+        return True
+
+    async def count_users_with_role(self, role: AdminRole) -> int:
+        return int(
+            await self.session.scalar(
+                select(func.count())
+                .select_from(RoleAssignmentModel)
+                .join(RoleModel, RoleModel.id == RoleAssignmentModel.role_id)
+                .where(RoleModel.code == role.value)
+            )
+            or 0
+        )
+
+
+@dataclass(slots=True)
+class SystemSettingsRepository:
+    session: AsyncSession
+
+    async def get(self) -> SystemSettingsView:
+        model = await self._get_or_create_model()
+        return SystemSettingsView(
+            default_cancel_deadline_offset_minutes=model.default_cancel_deadline_offset_minutes
+        )
+
+    async def set_default_cancel_deadline_offset_minutes(self, minutes: int) -> SystemSettingsView:
+        model = await self._get_or_create_model()
+        model.default_cancel_deadline_offset_minutes = minutes
+        await self.session.flush()
+        return SystemSettingsView(default_cancel_deadline_offset_minutes=minutes)
+
+    async def _get_or_create_model(self) -> SystemSettingsModel:
+        model = await self.session.get(SystemSettingsModel, 1)
+        if model is None:
+            model = SystemSettingsModel(id=1, default_cancel_deadline_offset_minutes=240)
+            self.session.add(model)
+            await self.session.flush()
+        return model
 
 
 @dataclass(slots=True)

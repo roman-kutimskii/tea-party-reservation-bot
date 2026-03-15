@@ -24,12 +24,20 @@ def visitor_menu_keyboard() -> ReplyKeyboardMarkup:
     )
 
 
-def admin_menu_keyboard() -> ReplyKeyboardMarkup:
+def admin_menu_keyboard(*, owner_controls: bool) -> ReplyKeyboardMarkup:
+    keyboard = [
+        [KeyboardButton(text="Создать событие"), KeyboardButton(text="Создать неделю")],
+        [KeyboardButton(text="События"), KeyboardButton(text="Участники")],
+    ]
+    if owner_controls:
+        keyboard.append(
+            [
+                KeyboardButton(text="Роли админов"),
+                KeyboardButton(text="Настройки системы"),
+            ]
+        )
     return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="Создать событие"), KeyboardButton(text="Создать неделю")],
-            [KeyboardButton(text="События"), KeyboardButton(text="Участники")],
-        ],
+        keyboard=keyboard,
         resize_keyboard=True,
     )
 
