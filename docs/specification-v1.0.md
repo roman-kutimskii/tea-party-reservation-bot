@@ -227,6 +227,7 @@ Notes:
 
 - Admin can update event fields after publication.
 - Admin can change capacity.
+- Capacity reductions must follow these rules: new capacity must stay above zero, cannot go below the current number of confirmed seats, and can match the confirmed-seat count exactly.
 - Admin can manually add a participant.
 - Admin can manually remove or cancel a participant.
 - Admin can move a user from waitlist to confirmed or vice versa.
@@ -240,6 +241,7 @@ Notes:
 - Concurrent sign-ups for the last seat.
 - Event edited after users already registered.
 - Admin reduces capacity below already confirmed seats.
+- Admin reduces capacity to the confirmed-seat floor.
 - User blocks bot after registering.
 - Group posting rights are missing or lost.
 - Invalid structured admin input.

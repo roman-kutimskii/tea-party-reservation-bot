@@ -404,6 +404,73 @@ async def test_admin_can_edit_capacity_and_close_then_reopen_registration(
 
 
 @pytest.mark.asyncio
+async def test_admin_cannot_reduce_capacity_below_confirmed_seats(
+    services: dict[str, object], session_factory: async_sessionmaker[AsyncSession]
+) -> None:
+    event_id = await _create_published_event(services, capacity=3)
+    admin_access = cast(AdminAccessService, services["admin_access"])
+    admin_events = cast(AdminEventService, services["admin_events"])
+    registration_service = cast(RegistrationService, services["registration"])
+    actor = await admin_access.load_actor(1000)
+
+    for user_id, username, first_name in ((7201, "u1", "One"), (7202, "u2", "Two")):
+        await registration_service.register(
+            profile=TelegramProfile(
+                telegram_user_id=user_id,
+                username=username,
+                first_name=first_name,
+                last_name=None,
+            ),
+            event_id=event_id,
+            idempotency_key=f"capacity-floor-{user_id}",
+        )
+
+    with pytest.raises(
+        ConflictError,
+        match="сейчас подтверждено 2, минимально допустимо 2",
+    ):
+        await admin_events.set_capacity(actor=actor, event_id=event_id, capacity=1)
+
+    async with session_factory() as session:
+        event = await session.get(EventOccurrenceModel, event_id)
+        assert event is not None
+        assert event.capacity == 3
+        assert event.reserved_seats == 2
+
+
+@pytest.mark.asyncio
+async def test_admin_can_reduce_capacity_to_exact_confirmed_seat_count(
+    services: dict[str, object], session_factory: async_sessionmaker[AsyncSession]
+) -> None:
+    event_id = await _create_published_event(services, capacity=3)
+    admin_access = cast(AdminAccessService, services["admin_access"])
+    admin_events = cast(AdminEventService, services["admin_events"])
+    registration_service = cast(RegistrationService, services["registration"])
+    actor = await admin_access.load_actor(1000)
+
+    for user_id, username, first_name in ((7301, "u3", "Three"), (7302, "u4", "Four")):
+        await registration_service.register(
+            profile=TelegramProfile(
+                telegram_user_id=user_id,
+                username=username,
+                first_name=first_name,
+                last_name=None,
+            ),
+            event_id=event_id,
+            idempotency_key=f"capacity-edge-{user_id}",
+        )
+
+    await admin_events.set_capacity(actor=actor, event_id=event_id, capacity=2)
+
+    async with session_factory() as session:
+        event = await session.get(EventOccurrenceModel, event_id)
+        assert event is not None
+        assert event.capacity == 2
+        assert event.reserved_seats == 2
+        assert event.status == EventStatus.PUBLISHED_FULL
+
+
+@pytest.mark.asyncio
 async def test_admin_event_updates_enqueue_detailed_change_notifications(
     services: dict[str, object], session_factory: async_sessionmaker[AsyncSession]
 ) -> None:

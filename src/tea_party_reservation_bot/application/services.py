@@ -74,6 +74,16 @@ class PublicationRequestResult:
     event_ids: tuple[int, ...]
 
 
+def _ensure_capacity_change_allowed(*, capacity: int, confirmed_seats: int) -> None:
+    if capacity <= 0:
+        raise ApplicationError("Вместимость должна быть больше нуля.")
+    if capacity < confirmed_seats:
+        raise ConflictError(
+            "Нельзя уменьшить вместимость ниже числа подтвержденных мест: "
+            f"сейчас подтверждено {confirmed_seats}, минимально допустимо {confirmed_seats}."
+        )
+
+
 @dataclass(slots=True, frozen=True)
 class PublicationStateChangeResult:
     batch_id: int
@@ -611,15 +621,13 @@ class AdminEventService:
         self, *, actor: Actor, event_id: int, capacity: int
     ) -> AdminEventOperationResult:
         self.authorization_service.require(actor, Permission.MANAGE_REGISTRATIONS)
-        if capacity <= 0:
-            raise ApplicationError("Вместимость должна быть больше нуля.")
         async with self.uow_factory() as uow:
             admin_user = await _require_existing_user(uow, actor.telegram_user_id)
             event = await _require_mutable_event(uow, event_id, self.clock.now())
-            if capacity < event.reserved_seats:
-                raise ConflictError(
-                    "Нельзя сделать вместимость меньше числа подтвержденных участников."
-                )
+            _ensure_capacity_change_allowed(
+                capacity=capacity,
+                confirmed_seats=event.reserved_seats,
+            )
             old_capacity = event.capacity
             event.capacity = capacity
             event.sync_status_from_capacity()
