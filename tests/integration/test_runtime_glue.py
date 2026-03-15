@@ -55,12 +55,19 @@ class FakeMessage:
 @dataclass(slots=True)
 class FakeGroupPublisher:
     messages: list[tuple[int, str]]
+    edited_messages: list[tuple[int, int, str]]
 
     async def send_group_post(
         self, *, chat_id: int, payload: TelegramGroupPostPayload
     ) -> FakeMessage:
         self.messages.append((chat_id, payload.text))
         return FakeMessage(chat=FakeChat(chat_id), message_id=777)
+
+    async def edit_group_post(
+        self, *, chat_id: int, message_id: int, payload: TelegramGroupPostPayload
+    ) -> FakeMessage:
+        self.edited_messages.append((chat_id, message_id, payload.text))
+        return FakeMessage(chat=FakeChat(chat_id), message_id=message_id)
 
 
 @dataclass(slots=True)
@@ -158,7 +165,7 @@ async def test_db_backed_bot_ports_and_worker_process_publication_request(
     processor = OutboxProcessor(
         session_factory=session_factory,
         publication_service=publication_service,
-        group_publisher=FakeGroupPublisher(messages=[]),
+        group_publisher=FakeGroupPublisher(messages=[], edited_messages=[]),
         notifier=FakeNotifier(messages=[]),
         publication_renderer=TelegramPublicationRenderer(),
         bot_username="tea_party_bot",
@@ -235,7 +242,7 @@ async def test_db_backed_ports_show_real_registrations_roster_and_notifications(
     processor = OutboxProcessor(
         session_factory=session_factory,
         publication_service=publication_service,
-        group_publisher=FakeGroupPublisher(messages=[]),
+        group_publisher=FakeGroupPublisher(messages=[], edited_messages=[]),
         notifier=FakeNotifier(messages=[]),
         publication_renderer=TelegramPublicationRenderer(),
         bot_username="tea_party_bot",
@@ -294,10 +301,11 @@ async def test_db_backed_ports_show_real_registrations_roster_and_notifications(
     assert cancelled is True
 
     notifier = FakeNotifier(messages=[])
+    group_publisher = FakeGroupPublisher(messages=[], edited_messages=[])
     processor = OutboxProcessor(
         session_factory=session_factory,
         publication_service=publication_service,
-        group_publisher=FakeGroupPublisher(messages=[]),
+        group_publisher=group_publisher,
         notifier=notifier,
         publication_renderer=TelegramPublicationRenderer(),
         bot_username="tea_party_bot",
@@ -312,6 +320,8 @@ async def test_db_backed_ports_show_real_registrations_roster_and_notifications(
     assert {message[0] for message in notifier.messages} == {3001, 3002}
     assert any("лист ожидания" in text for _, text in notifier.messages)
     assert any("подтверждена" in text for _, text in notifier.messages)
+    assert len(group_publisher.edited_messages) >= 4
+    assert any("Свободно мест: 0" in text for _, _, text in group_publisher.edited_messages)
 
     async with session_factory() as session:
         event = await session.get(EventOccurrenceModel, saved.event_ids[0])

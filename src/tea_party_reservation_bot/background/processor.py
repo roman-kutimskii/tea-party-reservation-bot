@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import timedelta
+from typing import Protocol
 
+from aiogram.types import Message
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -19,8 +21,7 @@ from tea_party_reservation_bot.infrastructure.db.repositories import (
     UserRepository,
 )
 from tea_party_reservation_bot.infrastructure.telegram.publication import (
-    AiogramGroupPublisher,
-    AiogramTelegramNotifier,
+    TelegramGroupPostPayload,
     TelegramPublicationRenderer,
 )
 from tea_party_reservation_bot.logging import get_logger
@@ -31,8 +32,8 @@ from tea_party_reservation_bot.time import load_timezone
 class OutboxProcessor:
     session_factory: async_sessionmaker[AsyncSession]
     publication_service: PublicationService
-    group_publisher: AiogramGroupPublisher
-    notifier: AiogramTelegramNotifier
+    group_publisher: GroupPublisher
+    notifier: TelegramNotifier
     publication_renderer: TelegramPublicationRenderer
     bot_username: str
     group_chat_id: int
@@ -134,6 +135,36 @@ class OutboxProcessor:
 
         text = self._render_notification_text(message.event_type, event)
         await self.notifier.send_direct_message(telegram_user_id=telegram_user_id, text=text)
+        await self._refresh_group_post(event)
+
+    async def _refresh_group_post(self, event: StoredEvent) -> None:
+        if (
+            event.telegram_group_chat_id is None
+            or event.telegram_group_message_id is None
+            or event.publication_batch_id is None
+        ):
+            return
+
+        events = await self._load_publication_events(event.publication_batch_id)
+        if not events:
+            return
+
+        if len(events) == 1:
+            payload = self.publication_renderer.render_published_event_post(
+                bot_username=self.bot_username,
+                event=events[0],
+            )
+        else:
+            payload = self.publication_renderer.render_published_batch_post(
+                bot_username=self.bot_username,
+                events=events,
+            )
+
+        await self.group_publisher.edit_group_post(
+            chat_id=event.telegram_group_chat_id,
+            message_id=event.telegram_group_message_id,
+            payload=payload,
+        )
 
     async def _load_event(self, event_id: int) -> StoredEvent:
         async with self.session_factory() as session:
@@ -202,3 +233,21 @@ class OutboxProcessor:
             "reservation.cancelled": f"Ваша запись отменена.\n{event_label}",
         }
         return templates[event_type]
+
+
+class GroupPublisher(Protocol):
+    async def send_group_post(
+        self, *, chat_id: int, payload: TelegramGroupPostPayload
+    ) -> Message: ...
+
+    async def edit_group_post(
+        self,
+        *,
+        chat_id: int,
+        message_id: int,
+        payload: TelegramGroupPostPayload,
+    ) -> Message: ...
+
+
+class TelegramNotifier(Protocol):
+    async def send_direct_message(self, *, telegram_user_id: int, text: str) -> Message: ...

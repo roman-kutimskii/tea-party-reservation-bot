@@ -345,6 +345,7 @@ class EventRepository:
             cancel_deadline_at=model.cancel_deadline_at,
             cancel_deadline_source=model.cancel_deadline_source,
             status=model.status,
+            publication_batch_id=model.publication_batch_id,
             published_at=model.published_at,
             telegram_group_chat_id=model.telegram_group_chat_id,
             telegram_group_message_id=model.telegram_group_message_id,

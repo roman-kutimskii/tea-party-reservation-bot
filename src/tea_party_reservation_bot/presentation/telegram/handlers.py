@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import cast
 
 from aiogram import F, Router
+from aiogram.enums import ChatType
 from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message, User
@@ -64,6 +65,8 @@ class TelegramHandlerDependencies:
 
 def build_router(deps: TelegramHandlerDependencies) -> Router:
     router = Router(name="telegram")
+    router.message.filter(_is_private_message)
+    router.callback_query.filter(_is_private_callback)
     load_actor = _build_load_actor(deps)
     _register_public_menu_handlers(router, deps, load_actor)
     _register_public_callback_handlers(router, deps)
@@ -86,6 +89,14 @@ def _build_load_actor(deps: TelegramHandlerDependencies) -> LoadActor:
         return await deps.application_service.sync_profile(profile)
 
     return load_actor
+
+
+def _is_private_message(message: Message) -> bool:
+    return message.chat.type == ChatType.PRIVATE
+
+
+def _is_private_callback(callback: CallbackQuery) -> bool:
+    return isinstance(callback.message, Message) and callback.message.chat.type == ChatType.PRIVATE
 
 
 def _render_preview(deps: TelegramHandlerDependencies, previews: list[EventPreview]) -> str:

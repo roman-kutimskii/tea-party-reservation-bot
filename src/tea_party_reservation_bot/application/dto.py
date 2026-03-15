@@ -46,6 +46,7 @@ class StoredEvent:
     cancel_deadline_at: datetime
     cancel_deadline_source: str
     status: str
+    publication_batch_id: int | None
     published_at: datetime | None
     telegram_group_chat_id: int | None
     telegram_group_message_id: int | None

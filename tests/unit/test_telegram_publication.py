@@ -2,13 +2,14 @@ from datetime import datetime
 
 from tea_party_reservation_bot.domain.enums import CancelDeadlineSource
 from tea_party_reservation_bot.domain.events import EventDraft, EventPreview
+from tea_party_reservation_bot.infrastructure.telegram.deep_links import build_event_deep_link
 from tea_party_reservation_bot.infrastructure.telegram.publication import (
     TelegramPublicationRenderer,
 )
 from tea_party_reservation_bot.time import load_timezone
 
 
-def test_batch_publication_renders_distinct_buttons() -> None:
+def test_batch_publication_renders_hidden_links_without_buttons() -> None:
     renderer = TelegramPublicationRenderer()
     previews = [
         EventPreview(
@@ -51,14 +52,14 @@ def test_batch_publication_renders_distinct_buttons() -> None:
         event_ids=["event-1", "event-2"],
     )
 
-    assert len(payload.reply_markup.inline_keyboard) == 2
-    assert (
-        payload.reply_markup.inline_keyboard[0][0].url
-        != payload.reply_markup.inline_keyboard[1][0].url
-    )
+    first_link = build_event_deep_link(bot_username="tea_party_bot", event_id="event-1")
+    second_link = build_event_deep_link(bot_username="tea_party_bot", event_id="event-2")
+    assert payload.reply_markup is None
+    assert f'<a href="{first_link}">Открыть регистрацию</a>' in payload.text
+    assert f'<a href="{second_link}">Открыть регистрацию</a>' in payload.text
 
 
-def test_single_publication_truncates_long_button_label() -> None:
+def test_single_publication_renders_hidden_link_without_button() -> None:
     renderer = TelegramPublicationRenderer()
     preview = EventPreview(
         normalized=EventDraft(
@@ -82,4 +83,6 @@ def test_single_publication_truncates_long_button_label() -> None:
         event_id="event-1",
     )
 
-    assert len(payload.reply_markup.inline_keyboard[0][0].text) <= 64
+    link = build_event_deep_link(bot_username="tea_party_bot", event_id="event-1")
+    assert payload.reply_markup is None
+    assert f'<a href="{link}">Открыть регистрацию</a>' in payload.text
