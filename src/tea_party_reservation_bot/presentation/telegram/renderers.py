@@ -66,12 +66,19 @@ def render_events_empty() -> str:
 
 
 def render_registration_result(result: RegistrationResult) -> str:
-    headline = "Вы записаны." if result.status == "confirmed" else "Вы в листе ожидания."
+    if result.status == "confirmed":
+        return (
+            "Вы записаны. За вами подтверждено 1 место.\n"
+            f"{escape(result.event.tea_name)}\n"
+            f"{result.event.starts_at_local:%d.%m.%Y %H:%M}\n"
+            "Мест: 1\n"
+            f"Отмена до: {result.event.cancel_deadline_at_local:%d.%m %H:%M}"
+        )
+
     return (
-        f"{headline}\n"
+        "Вы в листе ожидания. Это еще не подтвержденное место.\n"
         f"{escape(result.event.tea_name)}\n"
-        f"{result.event.starts_at_local:%d.%m.%Y %H:%M}\n"
-        f"Отмена до: {result.event.cancel_deadline_at_local:%d.%m %H:%M}"
+        f"{result.event.starts_at_local:%d.%m.%Y %H:%M}"
     )
 
 
@@ -80,7 +87,7 @@ def render_my_empty() -> str:
 
 
 def render_my_registration(registration: UserRegistrationView) -> str:
-    status = "Запись подтверждена" if registration.status == "confirmed" else "Лист ожидания"
+    status = "Подтверждено 1 место" if registration.status == "confirmed" else "Лист ожидания"
     lines = [
         escape(registration.tea_name),
         f"Когда: {registration.starts_at_local:%d.%m.%Y %H:%M}",
@@ -168,7 +175,7 @@ def render_admin_roles(assignments: Sequence[AdminRoleAssignmentView]) -> str:
 def render_system_settings(settings: ManagedSystemSettingsView) -> str:
     return (
         "Настройки системы:\n"
-        f"Default deadline: {settings.default_cancel_deadline_offset_minutes} мин.\n"
+        f"Срок отмены по умолчанию: {settings.default_cancel_deadline_offset_minutes} мин.\n"
         "Команда: /set_default_deadline <минуты>."
     )
 

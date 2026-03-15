@@ -334,8 +334,8 @@ async def test_db_backed_ports_show_real_registrations_roster_and_notifications(
 
     assert processed >= 4
     assert {message[0] for message in notifier.messages} == {3001, 3002}
-    assert any("лист ожидания" in text for _, text in notifier.messages)
-    assert any("подтверждена" in text for _, text in notifier.messages)
+    assert any("Это еще не подтвержденное место" in text for _, text in notifier.messages)
+    assert any("подтверждено 1 место" in text for _, text in notifier.messages)
     assert len(group_publisher.edited_messages) >= 4
     assert any("Свободно мест: 0" in text for _, _, text in group_publisher.edited_messages)
 

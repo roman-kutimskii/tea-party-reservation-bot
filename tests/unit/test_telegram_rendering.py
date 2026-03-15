@@ -7,6 +7,8 @@ from tea_party_reservation_bot.application.telegram import (
     ManagedSystemSettingsView,
     ParticipantView,
     PublicEventView,
+    RegistrationResult,
+    UserRegistrationView,
 )
 from tea_party_reservation_bot.presentation.telegram.keyboards import (
     admin_menu_keyboard,
@@ -17,6 +19,8 @@ from tea_party_reservation_bot.presentation.telegram.keyboards import (
 from tea_party_reservation_bot.presentation.telegram.renderers import (
     render_admin_roles,
     render_event_card,
+    render_my_registration,
+    render_registration_result,
     render_roster,
     render_system_settings,
 )
@@ -97,3 +101,58 @@ def test_render_owner_management_views() -> None:
     assert "/grant_role" in roles
     assert "180" in settings
     assert "/set_default_deadline" in settings
+    assert "Срок отмены по умолчанию" in settings
+
+
+def test_render_registration_result_mentions_single_confirmed_seat() -> None:
+    event = PublicEventView(
+        event_id="event-1",
+        tea_name="Шу Пуэр",
+        starts_at_local=datetime(2099, 3, 21, 19, 0, tzinfo=load_timezone("Europe/Moscow")),
+        cancel_deadline_at_local=datetime(
+            2099, 3, 21, 15, 0, tzinfo=load_timezone("Europe/Moscow")
+        ),
+        capacity=8,
+        reserved_seats=3,
+    )
+
+    text = render_registration_result(RegistrationResult(event=event, status="confirmed"))
+
+    assert "За вами подтверждено 1 место" in text
+    assert "Мест: 1" in text
+
+
+def test_render_waitlist_result_clarifies_seat_is_not_confirmed() -> None:
+    event = PublicEventView(
+        event_id="event-2",
+        tea_name="Да Хун Пао",
+        starts_at_local=datetime(2099, 3, 22, 19, 0, tzinfo=load_timezone("Europe/Moscow")),
+        cancel_deadline_at_local=datetime(
+            2099, 3, 22, 15, 0, tzinfo=load_timezone("Europe/Moscow")
+        ),
+        capacity=8,
+        reserved_seats=8,
+    )
+
+    text = render_registration_result(RegistrationResult(event=event, status="waitlist"))
+
+    assert "Это еще не подтвержденное место" in text
+    assert "Отмена до:" not in text
+
+
+def test_render_my_registration_mentions_single_confirmed_seat() -> None:
+    registration = UserRegistrationView(
+        registration_id="reg-1",
+        event_id="event-1",
+        tea_name="Шу Пуэр",
+        starts_at_local=datetime(2099, 3, 21, 19, 0, tzinfo=load_timezone("Europe/Moscow")),
+        cancel_deadline_at_local=datetime(
+            2099, 3, 21, 15, 0, tzinfo=load_timezone("Europe/Moscow")
+        ),
+        status="confirmed",
+        can_cancel=True,
+    )
+
+    text = render_my_registration(registration)
+
+    assert "Подтверждено 1 место" in text

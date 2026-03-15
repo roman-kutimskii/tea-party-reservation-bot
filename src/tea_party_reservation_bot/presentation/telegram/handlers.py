@@ -318,7 +318,14 @@ def _register_registration_handlers(
             idempotency_key=f"callback:{callback.id}:{registration_id}",
         )
         if callback.message is not None:
-            text = "Запись отменена." if cancelled else "Отменить запись уже нельзя."
+            text = (
+                "Запись отменена."
+                if cancelled
+                else (
+                    "Отменить запись уже нельзя: срок самостоятельной отмены прошел. "
+                    "Если организатор принимает поздние отмены, свяжитесь с ним напрямую."
+                )
+            )
             await callback.message.answer(text)
         await callback.answer("Готово")
 

@@ -248,9 +248,15 @@ class OutboxProcessor:
         starts_at_local = event.starts_at.astimezone(load_timezone(self.timezone_name))
         event_label = f"{event.tea_name}\n{starts_at_local:%d.%m.%Y %H:%M}"
         templates = {
-            "reservation.confirmed": f"Вы записаны на дегустацию.\n{event_label}",
-            "waitlist.joined": f"Вы добавлены в лист ожидания.\n{event_label}",
-            "waitlist.promoted": f"Освободилось место. Ваша запись подтверждена.\n{event_label}",
+            "reservation.confirmed": (
+                f"Вы записаны на дегустацию. За вами подтверждено 1 место.\n{event_label}"
+            ),
+            "waitlist.joined": (
+                f"Вы добавлены в лист ожидания. Это еще не подтвержденное место.\n{event_label}"
+            ),
+            "waitlist.promoted": (
+                f"Освободилось место. Теперь за вами подтверждено 1 место.\n{event_label}"
+            ),
             "reservation.cancelled": f"Ваша запись отменена.\n{event_label}",
             "waitlist.cancelled": f"Вы удалены из листа ожидания.\n{event_label}",
             "event.updated": f"Событие изменено.\n{event_label}",
