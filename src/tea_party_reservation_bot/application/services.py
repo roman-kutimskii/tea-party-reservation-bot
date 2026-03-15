@@ -32,7 +32,7 @@ from tea_party_reservation_bot.domain.events import EventDraft, EventPreview
 from tea_party_reservation_bot.domain.parsing import AdminEventInputParser
 from tea_party_reservation_bot.domain.rbac import Actor
 from tea_party_reservation_bot.exceptions import ApplicationError, ConflictError, NotFoundError
-from tea_party_reservation_bot.time import now_utc
+from tea_party_reservation_bot.time import load_timezone, now_utc
 
 
 class SystemClock(Clock):
@@ -367,6 +367,15 @@ class PublicationService:
                 message_id=message_id,
                 published_at=published_at,
             )
+            subscriber_telegram_user_ids = await uow.notifications.list_enabled_telegram_user_ids()
+            for published_event_id in stored_event_ids:
+                await _enqueue_bulk_notifications(
+                    uow,
+                    event_id=published_event_id,
+                    telegram_user_ids=subscriber_telegram_user_ids,
+                    event_type="event.announced",
+                    available_at=published_at,
+                )
             return PublicationStateChangeResult(
                 batch_id=batch_id,
                 event_ids=stored_event_ids,
@@ -483,7 +492,7 @@ class AdminEventService:
                 event_id=event.id,
                 telegram_user_ids=telegram_user_ids,
                 event_type="event.updated",
-                details="Параметры события обновлены.",
+                details=_format_event_change_details(changes, timezone_name=event.timezone),
                 available_at=self.clock.now(),
             )
             await uow.audit_log.append(
@@ -1196,6 +1205,35 @@ async def _promote_waitlist_until_capacity(
             )
         await _resequence_waitlist_positions(uow, event.id)
     return promoted_user_ids
+
+
+def _format_event_change_details(changes: dict[str, Any], *, timezone_name: str) -> str:
+    timezone = load_timezone(timezone_name)
+
+    def format_value(field_name: str, value: Any) -> str:
+        if value is None:
+            return "-"
+        if field_name in {"starts_at", "cancel_deadline_at"}:
+            parsed = datetime.fromisoformat(value)
+            return parsed.astimezone(timezone).strftime("%d.%m.%Y %H:%M")
+        return str(value)
+
+    labels = {
+        "tea_name": "Название",
+        "description": "Описание",
+        "starts_at": "Начало",
+        "cancel_deadline_at": "Отмена до",
+    }
+    lines = ["Изменения:"]
+    for field_name in ("tea_name", "description", "starts_at", "cancel_deadline_at"):
+        if field_name not in changes:
+            continue
+        change = changes[field_name]
+        lines.append(
+            f"{labels[field_name]}: {format_value(field_name, change['old'])} -> "
+            f"{format_value(field_name, change['new'])}"
+        )
+    return "\n".join(lines)
 
 
 def _ensure_registration_allowed(event: Any, now: datetime) -> None:

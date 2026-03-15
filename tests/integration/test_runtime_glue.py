@@ -5,14 +5,17 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
 import pytest
+from aiogram.types import Message
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from tea_party_reservation_bot.application.contracts import UnitOfWork
+from tea_party_reservation_bot.application.dto import TelegramProfile
 from tea_party_reservation_bot.application.security import DomainAuthorizationService
 from tea_party_reservation_bot.application.services import (
     AdminAccessService,
     AdminAuditService,
+    AdminEventService,
     AdminRoleManagementService,
     EventPersistenceService,
     EventQueryService,
@@ -69,26 +72,27 @@ class FakeGroupPublisher:
     messages: list[tuple[int, str]]
     edited_messages: list[tuple[int, int, str]]
 
-    async def send_group_post(
-        self, *, chat_id: int, payload: TelegramGroupPostPayload
-    ) -> FakeMessage:
+    async def send_group_post(self, *, chat_id: int, payload: TelegramGroupPostPayload) -> Message:
         self.messages.append((chat_id, payload.text))
-        return FakeMessage(chat=FakeChat(chat_id), message_id=777)
+        return cast(Any, FakeMessage(chat=FakeChat(chat_id), message_id=777))
 
     async def edit_group_post(
         self, *, chat_id: int, message_id: int, payload: TelegramGroupPostPayload
-    ) -> FakeMessage:
+    ) -> Message:
         self.edited_messages.append((chat_id, message_id, payload.text))
-        return FakeMessage(chat=FakeChat(chat_id), message_id=message_id)
+        return cast(Any, FakeMessage(chat=FakeChat(chat_id), message_id=message_id))
 
 
 @dataclass(slots=True)
 class FakeNotifier:
     messages: list[tuple[int, str]]
 
-    async def send_direct_message(self, *, telegram_user_id: int, text: str) -> FakeMessage:
+    async def send_direct_message(self, *, telegram_user_id: int, text: str) -> Message:
         self.messages.append((telegram_user_id, text))
-        return FakeMessage(chat=FakeChat(telegram_user_id), message_id=len(self.messages))
+        return cast(
+            Any,
+            FakeMessage(chat=FakeChat(telegram_user_id), message_id=len(self.messages)),
+        )
 
 
 def _services(
@@ -346,6 +350,148 @@ async def test_db_backed_ports_show_real_registrations_roster_and_notifications(
             select(EventOccurrenceModel.status).where(EventOccurrenceModel.id == saved.event_ids[0])
         )
         assert batch_status == EventStatus.PUBLISHED_FULL
+
+
+@pytest.mark.asyncio
+async def test_worker_sends_announcement_update_and_cancellation_notifications(
+    services: dict[str, object],
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    (
+        user_service,
+        admin_access,
+        event_service,
+        _query_service,
+        notification_service,
+        publication_service,
+        registration_service,
+    ) = _services(services)
+    admin_events = cast(AdminEventService, services["admin_events"])
+    actor = await admin_access.load_actor(1000)
+    timezone = load_timezone("Europe/Moscow")
+
+    await user_service.ensure_user(
+        TelegramProfile(
+            telegram_user_id=3201,
+            username="announce",
+            first_name="Ann",
+            last_name=None,
+        )
+    )
+    await user_service.ensure_user(
+        TelegramProfile(
+            telegram_user_id=3202,
+            username="guest",
+            first_name="Guest",
+            last_name=None,
+        )
+    )
+    await notification_service.set_new_events_enabled(3201, True)
+
+    start = datetime.now(tz=UTC) + timedelta(days=4)
+    draft = EventDraft(
+        tea_name="Габа Алишань",
+        description="Уведомления",
+        starts_at_local=start.astimezone(timezone),
+        starts_at_utc=start,
+        capacity=2,
+        cancel_deadline_source=CancelDeadlineSource.DEFAULT,
+        cancel_deadline_at_local=(start - timedelta(hours=4)).astimezone(timezone),
+        cancel_deadline_at_utc=start - timedelta(hours=4),
+    )
+    saved = await event_service.save_drafts(actor, [draft])
+    requested = await publication_service.request_single_event_publication(
+        actor=actor,
+        event_id=saved.event_ids[0],
+        idempotency_key="publish-notification-flow",
+    )
+
+    announcement_notifier = FakeNotifier(messages=[])
+    await OutboxProcessor(
+        session_factory=session_factory,
+        publication_service=publication_service,
+        group_publisher=cast(Any, FakeGroupPublisher(messages=[], edited_messages=[])),
+        notifier=cast(Any, announcement_notifier),
+        publication_renderer=TelegramPublicationRenderer(),
+        bot_username="tea_party_bot",
+        group_chat_id=-100123,
+        timezone_name="Europe/Moscow",
+        clock=SystemClock(),
+        retry_delay_seconds=1,
+    ).run_once(limit=10)
+
+    assert requested.batch_id is not None
+    assert announcement_notifier.messages == []
+
+    flow_notifier = FakeNotifier(messages=[])
+    flow_group_publisher = FakeGroupPublisher(messages=[], edited_messages=[])
+    await OutboxProcessor(
+        session_factory=session_factory,
+        publication_service=publication_service,
+        group_publisher=cast(Any, flow_group_publisher),
+        notifier=cast(Any, flow_notifier),
+        publication_renderer=TelegramPublicationRenderer(),
+        bot_username="tea_party_bot",
+        group_chat_id=-100123,
+        timezone_name="Europe/Moscow",
+        clock=SystemClock(),
+        retry_delay_seconds=1,
+    ).run_once(limit=10)
+
+    assert flow_notifier.messages == [
+        (
+            3201,
+            "Анонс новой дегустации.\n"
+            "Габа Алишань\n"
+            f"{start.astimezone(timezone):%d.%m.%Y %H:%M}\n"
+            "Записаться: https://t.me/tea_party_bot?start=event-MQ",
+        )
+    ]
+    assert flow_group_publisher.edited_messages == []
+
+    await registration_service.register(
+        profile=TelegramProfile(
+            telegram_user_id=3202,
+            username="guest",
+            first_name="Guest",
+            last_name=None,
+        ),
+        event_id=saved.event_ids[0],
+        idempotency_key="flow-r1",
+    )
+    updated_start = start + timedelta(days=1)
+    await admin_events.update_event_fields(
+        actor=actor,
+        event_id=saved.event_ids[0],
+        tea_name="Габа Улун",
+        starts_at=updated_start,
+        cancel_deadline_at=updated_start - timedelta(hours=5),
+    )
+    await admin_events.cancel_event(actor=actor, event_id=saved.event_ids[0])
+
+    state_notifier = FakeNotifier(messages=[])
+    state_group_publisher = FakeGroupPublisher(messages=[], edited_messages=[])
+    await OutboxProcessor(
+        session_factory=session_factory,
+        publication_service=publication_service,
+        group_publisher=cast(Any, state_group_publisher),
+        notifier=cast(Any, state_notifier),
+        publication_renderer=TelegramPublicationRenderer(),
+        bot_username="tea_party_bot",
+        group_chat_id=-100123,
+        timezone_name="Europe/Moscow",
+        clock=SystemClock(),
+        retry_delay_seconds=1,
+    ).run_once(limit=20)
+
+    assert any(
+        user_id == 3202 and "Событие изменено." in text for user_id, text in state_notifier.messages
+    )
+    assert any("Название: Габа Алишань -> Габа Улун" in text for _, text in state_notifier.messages)
+    assert any(
+        user_id == 3202 and "Событие отменено." in text for user_id, text in state_notifier.messages
+    )
+    assert len(state_group_publisher.edited_messages) >= 3
 
 
 @pytest.mark.asyncio

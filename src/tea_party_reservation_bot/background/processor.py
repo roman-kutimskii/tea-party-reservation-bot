@@ -21,6 +21,7 @@ from tea_party_reservation_bot.infrastructure.db.repositories import (
     OutboxRepository,
     UserRepository,
 )
+from tea_party_reservation_bot.infrastructure.telegram.deep_links import build_event_deep_link
 from tea_party_reservation_bot.infrastructure.telegram.publication import (
     TelegramGroupPostPayload,
     TelegramPublicationRenderer,
@@ -89,6 +90,7 @@ class OutboxProcessor:
             "waitlist.cancelled",
             "event.updated",
             "event.cancelled",
+            "event.announced",
         }:
             await self._dispatch_notification(message)
             return
@@ -137,6 +139,7 @@ class OutboxProcessor:
             "waitlist.cancelled",
             "event.updated",
             "event.cancelled",
+            "event.announced",
         }:
             telegram_user_id = int(message.payload["telegram_user_id"])
         else:
@@ -149,7 +152,8 @@ class OutboxProcessor:
             details=message.payload.get("details"),
         )
         await self.notifier.send_direct_message(telegram_user_id=telegram_user_id, text=text)
-        await self._refresh_group_post(event)
+        if message.event_type != "event.announced":
+            await self._refresh_group_post(event)
 
     async def _refresh_group_post(self, event: StoredEvent) -> None:
         if (
@@ -251,6 +255,12 @@ class OutboxProcessor:
             "waitlist.cancelled": f"Вы удалены из листа ожидания.\n{event_label}",
             "event.updated": f"Событие изменено.\n{event_label}",
             "event.cancelled": f"Событие отменено.\n{event_label}",
+            "event.announced": (
+                "Анонс новой дегустации.\n"
+                f"{event_label}\n"
+                "Записаться: "
+                f"{build_event_deep_link(bot_username=self.bot_username, event_id=str(event.id))}"
+            ),
         }
         message = templates[event_type]
         if details:

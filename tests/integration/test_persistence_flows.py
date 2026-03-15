@@ -269,6 +269,67 @@ async def test_notification_preferences_and_admin_roles(
 
 
 @pytest.mark.asyncio
+async def test_publication_success_enqueues_new_tasting_announcements_for_subscribers(
+    services: dict[str, object], session_factory: async_sessionmaker[AsyncSession]
+) -> None:
+    user_service = cast(UserApplicationService, services["user"])
+    notification_service = cast(NotificationPreferenceService, services["notifications"])
+    admin_access = cast(AdminAccessService, services["admin_access"])
+    event_service = cast(EventPersistenceService, services["events"])
+    publication_service = cast(PublicationService, services["publication"])
+
+    await user_service.ensure_user(
+        TelegramProfile(telegram_user_id=5101, username="sub1", first_name="Sub", last_name=None)
+    )
+    await user_service.ensure_user(
+        TelegramProfile(telegram_user_id=5102, username="sub2", first_name="Muted", last_name=None)
+    )
+    await notification_service.set_new_events_enabled(5101, True)
+    await notification_service.set_new_events_enabled(5102, False)
+
+    actor = await admin_access.load_actor(1000)
+    start = datetime.now(tz=UTC) + timedelta(days=4)
+    draft = EventDraft(
+        tea_name="Лун Цзин",
+        description="Новый анонс",
+        starts_at_local=start,
+        starts_at_utc=start,
+        capacity=6,
+        cancel_deadline_source=CancelDeadlineSource.DEFAULT,
+        cancel_deadline_at_local=start - timedelta(hours=4),
+        cancel_deadline_at_utc=start - timedelta(hours=4),
+    )
+    saved = await event_service.save_drafts(actor, [draft])
+    requested = await publication_service.request_single_event_publication(
+        actor=actor,
+        event_id=saved.event_ids[0],
+        idempotency_key="publish-announcement",
+    )
+
+    await publication_service.mark_publication_succeeded(
+        batch_id=requested.batch_id or 0,
+        event_ids=list(requested.event_ids),
+        chat_id=-100123,
+        message_id=1001,
+    )
+
+    async with session_factory() as session:
+        rows = (
+            (
+                await session.execute(
+                    select(OutboxEventModel).where(OutboxEventModel.event_type == "event.announced")
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    assert len(rows) == 1
+    assert rows[0].payload_json["event_id"] == saved.event_ids[0]
+    assert rows[0].payload_json["telegram_user_id"] == 5101
+
+
+@pytest.mark.asyncio
 async def test_duplicate_registration_with_new_idempotency_key_is_rejected(
     services: dict[str, object],
 ) -> None:
@@ -340,6 +401,53 @@ async def test_admin_can_edit_capacity_and_close_then_reopen_registration(
         assert event.status == EventStatus.PUBLISHED_FULL
         assert len(reservations) == 2
         assert len(waitlist) == 1
+
+
+@pytest.mark.asyncio
+async def test_admin_event_updates_enqueue_detailed_change_notifications(
+    services: dict[str, object], session_factory: async_sessionmaker[AsyncSession]
+) -> None:
+    event_id = await _create_published_event(services, capacity=2)
+    admin_access = cast(AdminAccessService, services["admin_access"])
+    admin_events = cast(AdminEventService, services["admin_events"])
+    registration_service = cast(RegistrationService, services["registration"])
+    actor = await admin_access.load_actor(1000)
+
+    await registration_service.register(
+        profile=TelegramProfile(
+            telegram_user_id=7101, username="guest1", first_name="Guest", last_name=None
+        ),
+        event_id=event_id,
+        idempotency_key="event-update-r1",
+    )
+
+    new_start = datetime.now(tz=UTC) + timedelta(days=5)
+    await admin_events.update_event_fields(
+        actor=actor,
+        event_id=event_id,
+        tea_name="Шэн Пуэр",
+        starts_at=new_start,
+        cancel_deadline_at=new_start - timedelta(hours=6),
+    )
+
+    async with session_factory() as session:
+        rows = (
+            (
+                await session.execute(
+                    select(OutboxEventModel)
+                    .where(OutboxEventModel.event_type == "event.updated")
+                    .order_by(OutboxEventModel.id.asc())
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    assert rows
+    assert rows[-1].payload_json["telegram_user_id"] == 7101
+    assert "Изменения:" in rows[-1].payload_json["details"]
+    assert "Название: Да Хун Пао -> Шэн Пуэр" in rows[-1].payload_json["details"]
+    assert "Отмена до:" in rows[-1].payload_json["details"]
 
 
 @pytest.mark.asyncio

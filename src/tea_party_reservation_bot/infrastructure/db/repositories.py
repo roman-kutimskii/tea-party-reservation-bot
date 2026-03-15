@@ -516,6 +516,15 @@ class NotificationPreferenceRepository:
             user_id=user_id, new_events_enabled=model.new_events_enabled
         )
 
+    async def list_enabled_telegram_user_ids(self) -> list[int]:
+        result = await self.session.execute(
+            select(UserModel.telegram_user_id)
+            .join(NotificationPreferenceModel, NotificationPreferenceModel.user_id == UserModel.id)
+            .where(NotificationPreferenceModel.new_events_enabled.is_(True))
+            .order_by(UserModel.telegram_user_id.asc())
+        )
+        return list(result.scalars().all())
+
 
 @dataclass(slots=True)
 class OutboxRepository:
