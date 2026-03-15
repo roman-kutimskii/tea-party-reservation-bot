@@ -49,6 +49,7 @@ from tea_party_reservation_bot.infrastructure.telegram.backends import (
     SqlAlchemySystemSettingsManagementPort,
     SqlAlchemyTelegramUserSyncPort,
 )
+from tea_party_reservation_bot.infrastructure.telegram.deep_links import build_event_deep_link
 from tea_party_reservation_bot.infrastructure.telegram.publication import (
     TelegramGroupPostPayload,
     TelegramPublicationRenderer,
@@ -125,7 +126,7 @@ async def test_db_backed_bot_ports_and_worker_process_publication_request(
     (
         user_service,
         admin_access,
-        event_service,
+        _event_service,
         query_service,
         notification_service,
         publication_service,
@@ -242,7 +243,7 @@ async def test_publication_port_publish_batch_persists_intent_and_outbox_togethe
     previews = [
         EventPreview(
             normalized=EventDraft(
-                tea_name="Бай Му Дань",
+                tea_name="Шуй Сянь",
                 description="Первая встреча",
                 starts_at_local=first_start.astimezone(timezone),
                 starts_at_utc=first_start,
@@ -255,7 +256,7 @@ async def test_publication_port_publish_batch_persists_intent_and_outbox_togethe
         ),
         EventPreview(
             normalized=EventDraft(
-                tea_name="Лун Цзин",
+                tea_name="Габа Улун",
                 description="Вторая встреча",
                 starts_at_local=second_start.astimezone(timezone),
                 starts_at_utc=second_start,
@@ -286,6 +287,106 @@ async def test_publication_port_publish_batch_persists_intent_and_outbox_togethe
         assert outbox_rows[0].event_type == "publication.requested"
         assert outbox_rows[0].payload_json["kind"] == "batch"
         assert outbox_rows[0].payload_json["event_ids"] == sorted(event.id for event in events)
+
+
+@pytest.mark.asyncio
+async def test_batch_publication_worker_sends_one_combined_group_post_with_distinct_links(
+    services: dict[str, object],
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    (
+        _user_service,
+        admin_access,
+        _event_service,
+        _query_service,
+        _notification_service,
+        publication_service,
+        _registration_service,
+    ) = _services(services)
+    timezone = load_timezone("Europe/Moscow")
+    publication_port = SqlAlchemyPublicationWorkflowPort(
+        publication_service=publication_service,
+        timezone_name="Europe/Moscow",
+    )
+    event_read_model = SqlAlchemyEventReadModelPort(
+        session_factory=session_factory, timezone=timezone
+    )
+
+    actor = await admin_access.load_actor(1000)
+    first_start = datetime.now(tz=UTC) + timedelta(days=7)
+    second_start = first_start + timedelta(days=1)
+    previews = [
+        EventPreview(
+            normalized=EventDraft(
+                tea_name="Шуй Сянь",
+                description="Первая встреча",
+                starts_at_local=first_start.astimezone(timezone),
+                starts_at_utc=first_start,
+                capacity=6,
+                cancel_deadline_source=CancelDeadlineSource.DEFAULT,
+                cancel_deadline_at_local=(first_start - timedelta(hours=4)).astimezone(timezone),
+                cancel_deadline_at_utc=first_start - timedelta(hours=4),
+            ),
+            block_number=1,
+        ),
+        EventPreview(
+            normalized=EventDraft(
+                tea_name="Габа Улун",
+                description="Вторая встреча",
+                starts_at_local=second_start.astimezone(timezone),
+                starts_at_utc=second_start,
+                capacity=5,
+                cancel_deadline_source=CancelDeadlineSource.DEFAULT,
+                cancel_deadline_at_local=(second_start - timedelta(hours=4)).astimezone(timezone),
+                cancel_deadline_at_utc=second_start - timedelta(hours=4),
+            ),
+            block_number=2,
+        ),
+    ]
+
+    receipt = await publication_port.publish_batch(
+        actor=actor,
+        previews=previews,
+        idempotency_key="publish-port-batch-combined-post",
+    )
+
+    assert receipt.accepted is True
+
+    group_publisher = FakeGroupPublisher(messages=[], edited_messages=[])
+    processor = OutboxProcessor(
+        session_factory=session_factory,
+        publication_service=publication_service,
+        group_publisher=group_publisher,
+        notifier=FakeNotifier(messages=[]),
+        publication_renderer=TelegramPublicationRenderer(),
+        bot_username="tea_party_bot",
+        group_chat_id=-100123,
+        timezone_name="Europe/Moscow",
+        clock=SystemClock(),
+        retry_delay_seconds=1,
+    )
+
+    processed = await processor.run_once(limit=10)
+
+    assert processed == 1
+    public_events = await event_read_model.list_public_events()
+    assert len(public_events) == 2
+    assert len(group_publisher.messages) == 1
+
+    _, payload_text = group_publisher.messages[0]
+    first_link = build_event_deep_link(
+        bot_username="tea_party_bot", event_id=str(public_events[0].event_id)
+    )
+    second_link = build_event_deep_link(
+        bot_username="tea_party_bot", event_id=str(public_events[1].event_id)
+    )
+
+    assert "1. Шуй Сянь" in payload_text
+    assert "2. Габа Улун" in payload_text
+    assert payload_text.count("Открыть регистрацию") == 2
+    assert first_link in payload_text
+    assert second_link in payload_text
+    assert payload_text.count("\n\n") == 1
 
 
 @pytest.mark.asyncio

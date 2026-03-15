@@ -217,7 +217,7 @@ Notes:
   - one combined text post;
   - clearly separated event blocks;
   - one distinct registration deep link per event.
-- Each button must open the bot for the exact event it belongs to.
+- Each event deep link must open the bot for the exact event it belongs to.
 - Group publication is announcement-only; registration itself happens in the bot private chat, not inside the group thread.
 - Publication requires explicit admin confirmation.
 - If single-event publication fails, the event remains unpublished.
