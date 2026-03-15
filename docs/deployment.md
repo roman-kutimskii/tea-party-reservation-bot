@@ -62,6 +62,10 @@ Application settings use nested env vars with the `TEA_PARTY_` prefix, for examp
 - `TEA_PARTY_TELEGRAM__BOT_TOKEN`
 - `TEA_PARTY_TELEGRAM__GROUP_CHAT_ID`
 - `TEA_PARTY_WORKER__OUTBOX_POLL_INTERVAL_SECONDS`
+- `TEA_PARTY_METRICS__ENABLED`
+- `TEA_PARTY_METRICS__HOST`
+- `TEA_PARTY_METRICS__BOT_PORT`
+- `TEA_PARTY_METRICS__WORKER_PORT`
 
 When metrics are enabled, the bot and worker metrics listeners also expose lightweight operational probes on the same port:
 
@@ -78,6 +82,7 @@ The GitHub Actions workflows expect:
 - Docker build succeeds from repository root
 - unit and integration suites are runnable separately via `tests/unit` and `tests/integration`
 - stage/prod SSH secrets and deployment paths configured in GitHub environments
+- stage/prod `OPS_DEPLOY_WEBHOOK_URL` environment secrets configured when deployment notifications are required
 - deployment env files already exist on the target host before CD runs
 
 ## Secrets handling
@@ -92,5 +97,13 @@ The GitHub Actions workflows expect:
 
 - daily `pg_dump` via systemd timer
 - restic copy to off-VPS object storage
+- optional backup heartbeat ping via `backup_healthcheck_url`
+- backup failures and runtime incidents can post to `monitoring_alert_webhook_url`
 - Hetzner server backups enabled at infrastructure layer
 - monthly restore drill using `ops/runbooks/restore.md`
+
+## Monitoring wiring
+
+- `infra/ansible/roles/monitoring` now installs a systemd timer that checks bot and worker `/readyz` endpoints every five minutes and optionally pings an external uptime service
+- the same probe inspects recent container logs for `error` and `critical` structured log entries and sends a single alert per active burst window
+- deployment workflows can POST structured deployment events to `OPS_DEPLOY_WEBHOOK_URL`

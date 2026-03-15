@@ -1,11 +1,151 @@
 - name: Install node exporter
   ansible.builtin.apt:
-    name: prometheus-node-exporter
+    name:
+      - curl
+      - prometheus-node-exporter
     state: present
+
+- name: Create monitoring state directory
+  ansible.builtin.file:
+    path: /var/lib/tea-party-monitoring
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Install monitoring environment file
+  ansible.builtin.copy:
+    dest: /etc/tea-party-monitoring.env
+    owner: root
+    group: root
+    mode: '0600'
+    content: |
+      APP_ENVIRONMENT={{ group_names | intersect(['stage', 'prod']) | first | default('prod') }}
+      RUNTIME_HOST={{ monitoring_runtime_host }}
+      BOT_METRICS_PORT={{ monitoring_bot_metrics_port }}
+      WORKER_METRICS_PORT={{ monitoring_worker_metrics_port }}
+      UPTIME_PING_URL={{ monitoring_uptime_ping_url }}
+      ALERT_WEBHOOK_URL={{ monitoring_alert_webhook_url }}
+      COMPOSE_DIR={{ compose_dir }}
+      COMPOSE_OVERRIDE_FILE=compose.{{ group_names | intersect(['stage', 'prod']) | first | default('prod') }}.yml
+      ERROR_LOOKBACK_MINUTES={{ monitoring_error_lookback_minutes }}
+      ERROR_BURST_THRESHOLD={{ monitoring_error_burst_threshold }}
+      STATE_DIR=/var/lib/tea-party-monitoring
+
+- name: Install monitoring probe script
+  ansible.builtin.copy:
+    dest: /usr/local/bin/tea-party-monitoring-check.sh
+    owner: root
+    group: root
+    mode: '0750'
+    content: |
+      #!/bin/sh
+      set -eu
+
+      . /etc/tea-party-monitoring.env
+
+      READY_STATE_FILE="${STATE_DIR}/readyz-down"
+      ERROR_STATE_FILE="${STATE_DIR}/error-burst-window"
+      BOT_READYZ_URL="http://${RUNTIME_HOST}:${BOT_METRICS_PORT}/readyz"
+      WORKER_READYZ_URL="http://${RUNTIME_HOST}:${WORKER_METRICS_PORT}/readyz"
+
+      post_event() {
+        event_name="$1"
+        message="$2"
+
+        if [ -z "${ALERT_WEBHOOK_URL:-}" ]; then
+          return 0
+        fi
+
+        payload=$(EVENT_NAME="$event_name" EVENT_MESSAGE="$message" python3 -c 'import json, os; print(json.dumps({"event": os.environ["EVENT_NAME"], "environment": os.environ.get("APP_ENVIRONMENT", "prod"), "message": os.environ["EVENT_MESSAGE"], "host": os.uname().nodename}))')
+        curl -fsS -X POST "$ALERT_WEBHOOK_URL" -H 'Content-Type: application/json' --data "$payload" >/dev/null
+      }
+
+      check_readiness() {
+        curl -fsS --max-time 10 "$BOT_READYZ_URL" >/dev/null && \
+          curl -fsS --max-time 10 "$WORKER_READYZ_URL" >/dev/null
+      }
+
+      check_error_burst() {
+        error_count=$(docker compose -f "${COMPOSE_DIR}/compose.yml" -f "${COMPOSE_DIR}/${COMPOSE_OVERRIDE_FILE}" logs --since "${ERROR_LOOKBACK_MINUTES}m" bot worker 2>&1 | grep -E -c '"level":"(error|critical)"' || true)
+        current_window=$(date +%Y%m%d%H%M)
+
+        if [ "$error_count" -ge "$ERROR_BURST_THRESHOLD" ]; then
+          last_window=""
+          if [ -f "$ERROR_STATE_FILE" ]; then
+            last_window=$(cat "$ERROR_STATE_FILE")
+          fi
+          if [ "$last_window" != "$current_window" ]; then
+            post_event "error_burst" "Detected ${error_count} error or critical log entries in the last ${ERROR_LOOKBACK_MINUTES} minutes."
+            printf '%s' "$current_window" > "$ERROR_STATE_FILE"
+          fi
+        else
+          rm -f "$ERROR_STATE_FILE"
+        fi
+      }
+
+      if check_readiness; then
+        if [ -f "$READY_STATE_FILE" ]; then
+          post_event "uptime_recovered" "Bot and worker readiness probes recovered."
+          rm -f "$READY_STATE_FILE"
+        fi
+        if [ -n "${UPTIME_PING_URL:-}" ]; then
+          curl -fsS --retry 3 "$UPTIME_PING_URL" >/dev/null
+        fi
+      else
+        if [ ! -f "$READY_STATE_FILE" ]; then
+          post_event "uptime_check_failed" "Bot or worker readiness probe failed."
+          date -Iseconds > "$READY_STATE_FILE"
+        fi
+      fi
+
+      check_error_burst
+
+- name: Install monitoring probe service
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/tea-party-monitoring-check.service
+    owner: root
+    group: root
+    mode: '0644'
+    content: |
+      [Unit]
+      Description=Tea Party uptime and error probe
+      After=network-online.target docker.service
+
+      [Service]
+      Type=oneshot
+      EnvironmentFile=/etc/tea-party-monitoring.env
+      ExecStart=/usr/local/bin/tea-party-monitoring-check.sh
+  notify: Reload systemd
+
+- name: Install monitoring probe timer
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/tea-party-monitoring-check.timer
+    owner: root
+    group: root
+    mode: '0644'
+    content: |
+      [Unit]
+      Description=Run Tea Party uptime and error probe
+
+      [Timer]
+      OnBootSec=2m
+      OnUnitActiveSec={{ monitoring_check_interval_minutes }}m
+      Persistent=true
+
+      [Install]
+      WantedBy=timers.target
+  notify: Reload systemd
 
 - name: Enable node exporter
   ansible.builtin.service:
     name: prometheus-node-exporter
+    enabled: true
+    state: started
+
+- name: Enable monitoring probe timer
+  ansible.builtin.service:
+    name: tea-party-monitoring-check.timer
     enabled: true
     state: started
 

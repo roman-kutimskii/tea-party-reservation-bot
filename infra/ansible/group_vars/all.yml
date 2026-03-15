@@ -6,6 +6,15 @@ compose_dir: "{{ deploy_root }}/compose"
 env_dir: "{{ deploy_root }}/env"
 backup_root: /srv/tea-party-reservation-bot/backups
 monitoring_allowed_cidrs: []
+monitoring_runtime_host: 127.0.0.1
+monitoring_bot_metrics_port: 9101
+monitoring_worker_metrics_port: 9102
+monitoring_check_interval_minutes: 5
+monitoring_error_lookback_minutes: 10
+monitoring_error_burst_threshold: 5
+monitoring_uptime_ping_url: "{{ vault_monitoring_uptime_ping_url | default('', true) }}"
+monitoring_alert_webhook_url: "{{ vault_monitoring_alert_webhook_url | default('', true) }}"
+backup_healthcheck_url: "{{ vault_backup_healthcheck_url | default('', true) }}"
 ufw_allowed_ssh_cidrs:
   - 203.0.113.0/24
 app_service_name: tea-party-compose.service

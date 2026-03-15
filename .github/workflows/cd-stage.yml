@@ -98,3 +98,33 @@ jobs:
             set -eu
             cd '${{ secrets.STAGE_DEPLOY_PATH }}'
             docker compose -f compose.yml -f compose.stage.yml ps
+
+      - name: Send deployment notification
+        if: always()
+        env:
+          DEPLOY_WEBHOOK_URL: ${{ secrets.OPS_DEPLOY_WEBHOOK_URL }}
+          DEPLOY_STATUS: ${{ job.status }}
+          DEPLOY_ENVIRONMENT: stage
+          IMAGE_REF: ${{ needs.build-and-publish.outputs.image_ref }}
+          REPOSITORY: ${{ github.repository }}
+          COMMIT_SHA: ${{ github.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [ -z "$DEPLOY_WEBHOOK_URL" ]; then
+            exit 0
+          fi
+          python - <<'PY' | curl -fsS -X POST "$DEPLOY_WEBHOOK_URL" -H 'Content-Type: application/json' --data-binary @-
+          import json
+          import os
+
+          payload = {
+              "event": "deployment",
+              "status": os.environ["DEPLOY_STATUS"],
+              "environment": os.environ["DEPLOY_ENVIRONMENT"],
+              "repository": os.environ["REPOSITORY"],
+              "sha": os.environ["COMMIT_SHA"],
+              "image_ref": os.environ["IMAGE_REF"],
+              "run_url": os.environ["RUN_URL"],
+          }
+          print(json.dumps(payload))
+          PY

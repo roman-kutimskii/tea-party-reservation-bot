@@ -5,6 +5,21 @@ STAMP="$(date +%Y%m%d-%H%M%S)"
 BACKUP_DIR="{{ backup_root }}"
 DUMP_FILE="${BACKUP_DIR}/postgres-${STAMP}.dump"
 
+notify_alert() {
+  if [ -z "${ALERT_WEBHOOK_URL:-}" ]; then
+    return 0
+  fi
+
+  payload=$(DUMP_FILE="$DUMP_FILE" python3 -c 'import json, os; print(json.dumps({"event": "backup_failure", "environment": os.environ.get("APP_ENVIRONMENT", "prod"), "host": os.uname().nodename, "backup_file": os.environ.get("DUMP_FILE", "")}))')
+  curl -fsS -X POST "$ALERT_WEBHOOK_URL" -H 'Content-Type: application/json' --data "$payload"
+}
+
+on_error() {
+  notify_alert || true
+}
+
+trap on_error HUP INT TERM EXIT
+
 mkdir -p "$BACKUP_DIR"
 pg_dump --format=custom --file "$DUMP_FILE"
 
@@ -13,3 +28,9 @@ restic backup "$DUMP_FILE" "$BACKUP_DIR"
 restic forget --keep-daily 7 --keep-weekly 4 --keep-monthly 6 --prune
 
 find "$BACKUP_DIR" -type f -name 'postgres-*.dump' -mtime +2 -delete
+
+if [ -n "${BACKUP_HEALTHCHECK_URL:-}" ]; then
+  curl -fsS --retry 3 "$BACKUP_HEALTHCHECK_URL"
+fi
+
+trap - HUP INT TERM EXIT
