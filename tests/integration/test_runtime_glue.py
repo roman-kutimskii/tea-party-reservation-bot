@@ -40,6 +40,7 @@ from tea_party_reservation_bot.infrastructure.db.models import (
 )
 from tea_party_reservation_bot.infrastructure.db.uow import SqlAlchemyUnitOfWork
 from tea_party_reservation_bot.infrastructure.telegram.backends import (
+    SqlAlchemyAdminEventCommandPort,
     SqlAlchemyAdminRoleManagementPort,
     SqlAlchemyAdminRoleRepository,
     SqlAlchemyEventReadModelPort,
@@ -1131,3 +1132,81 @@ async def test_admin_sensitive_reads_are_audited(
         "confirmed_count": 1,
         "waitlist_count": 1,
     }
+
+
+@pytest.mark.asyncio
+async def test_admin_command_port_can_override_cancellation_deadline(
+    services: dict[str, object], session_factory: async_sessionmaker[AsyncSession]
+) -> None:
+    auth = DomainAuthorizationService()
+    clock = SystemClock()
+    timezone = load_timezone("Europe/Moscow")
+    typed_uow_factory = cast(Any, lambda: cast(UnitOfWork, SqlAlchemyUnitOfWork(session_factory)))
+    admin_access = cast(AdminAccessService, services["admin_access"])
+    user_service = cast(UserApplicationService, services["user"])
+    event_service = EventPersistenceService(typed_uow_factory, auth, "Europe/Moscow")
+    publication_service = PublicationService(typed_uow_factory, auth, clock)
+    registration_service = RegistrationService(typed_uow_factory, clock, auth)
+    actor = await admin_access.load_actor(1000)
+
+    start = datetime.now(tz=UTC) + timedelta(days=2)
+    draft = EventDraft(
+        tea_name="Поздний Шэн",
+        description="Окно самоотмены закрыто",
+        starts_at_local=start.astimezone(timezone),
+        starts_at_utc=start,
+        capacity=2,
+        cancel_deadline_source=CancelDeadlineSource.DEFAULT,
+        cancel_deadline_at_local=(start - timedelta(days=3)).astimezone(timezone),
+        cancel_deadline_at_utc=start - timedelta(days=3),
+    )
+    saved = await event_service.save_drafts(actor, [draft])
+    requested = await publication_service.request_single_event_publication(
+        actor=actor,
+        event_id=saved.event_ids[0],
+        idempotency_key="publish-admin-override",
+    )
+    await publication_service.mark_publication_succeeded(
+        batch_id=requested.batch_id or 0,
+        event_ids=list(requested.event_ids),
+        chat_id=-100123,
+        message_id=888,
+    )
+    await user_service.ensure_user(
+        TelegramProfile(
+            telegram_user_id=3301,
+            username="lateguest",
+            first_name="Late",
+            last_name="Guest",
+        )
+    )
+    await registration_service.register(
+        profile=TelegramProfile(
+            telegram_user_id=3301,
+            username="lateguest",
+            first_name="Late",
+            last_name="Guest",
+        ),
+        event_id=saved.event_ids[0],
+        idempotency_key="late-guest-register",
+    )
+
+    admin_commands = SqlAlchemyAdminEventCommandPort(
+        service=AdminEventService(typed_uow_factory, auth, clock),
+        registration_service=registration_service,
+        timezone=timezone,
+    )
+
+    result = await admin_commands.override_participant_cancellation(
+        actor=actor,
+        event_id=str(saved.event_ids[0]),
+        telegram_user_id="3301",
+        idempotency_key="admin-late-cancel",
+    )
+
+    assert result == "Запись отменена."
+
+    async with session_factory() as session:
+        event = await session.get(EventOccurrenceModel, saved.event_ids[0])
+        assert event is not None
+        assert event.reserved_seats == 0

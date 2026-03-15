@@ -105,6 +105,7 @@ class BotRuntime:
             ),
             admin_commands=SqlAlchemyAdminEventCommandPort(
                 service=AdminEventService(uow_factory, authorization_service, clock),
+                registration_service=RegistrationService(uow_factory, clock, authorization_service),
                 timezone=self.settings.app.timezone,
             ),
             admin_role_management=SqlAlchemyAdminRoleManagementPort(

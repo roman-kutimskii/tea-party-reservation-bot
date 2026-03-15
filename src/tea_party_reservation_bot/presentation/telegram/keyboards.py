@@ -9,6 +9,7 @@ from aiogram.types import (
 
 from tea_party_reservation_bot.application.telegram import (
     AdminEventView,
+    EventRosterView,
     PublicEventView,
     UserRegistrationView,
 )
@@ -120,3 +121,23 @@ def admin_events_keyboard(events: list[AdminEventView]) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=rows or [[InlineKeyboardButton(text="Список пуст", callback_data="noop")]]
     )
+
+
+def roster_actions_keyboard(roster: EventRosterView) -> InlineKeyboardMarkup | None:
+    if not roster.participants:
+        return None
+    rows = [
+        [
+            InlineKeyboardButton(
+                text=(
+                    f"{'Поздняя отмена' if roster.event.cancel_deadline_passed else 'Отменить запись'} "
+                    f"{participant.telegram_user_id}"
+                ),
+                callback_data=(
+                    f"admin:cancel_override:{roster.event.event_id}:{participant.telegram_user_id}"
+                ),
+            )
+        ]
+        for participant in roster.participants
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=rows)

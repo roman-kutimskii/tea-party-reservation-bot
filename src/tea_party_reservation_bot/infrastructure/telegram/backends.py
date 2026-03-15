@@ -280,6 +280,8 @@ class SqlAlchemyEventReadModelPort(EventReadModelPort):
             event_id=str(model.id),
             tea_name=model.tea_name,
             starts_at_local=model.starts_at.astimezone(self.timezone),
+            cancel_deadline_at_local=model.cancel_deadline_at.astimezone(self.timezone),
+            cancel_deadline_passed=model.cancel_deadline_at <= now_utc(),
             capacity=model.capacity,
             reserved_seats=model.reserved_seats,
             status=model.status,
@@ -445,6 +447,7 @@ class SqlAlchemyPublicationWorkflowPort(PublicationWorkflowPort):
 @dataclass(slots=True)
 class SqlAlchemyAdminEventCommandPort(AdminEventCommandPort):
     service: AdminEventService
+    registration_service: RegistrationService
     timezone: tzinfo
 
     async def set_event_name(self, *, actor: Actor, event_id: str, tea_name: str) -> str:
@@ -533,6 +536,18 @@ class SqlAlchemyAdminEventCommandPort(AdminEventCommandPort):
             actor=actor,
             event_id=_parse_admin_event_id(event_id),
             telegram_user_id=_parse_telegram_user_id(telegram_user_id),
+        )
+        return result.message
+
+    async def override_participant_cancellation(
+        self, *, actor: Actor, event_id: str, telegram_user_id: str, idempotency_key: str
+    ) -> str:
+        result = await self.registration_service.cancel(
+            telegram_user_id=_parse_telegram_user_id(telegram_user_id),
+            event_id=_parse_admin_event_id(event_id),
+            idempotency_key=idempotency_key,
+            override_deadline=True,
+            actor=actor,
         )
         return result.message
 

@@ -35,6 +35,7 @@ from tea_party_reservation_bot.presentation.telegram.keyboards import (
     event_actions_keyboard,
     notifications_keyboard,
     registration_cancel_keyboard,
+    roster_actions_keyboard,
     visitor_menu_keyboard,
 )
 from tea_party_reservation_bot.presentation.telegram.renderers import (
@@ -137,6 +138,16 @@ def _extract_command_arguments(text: str | None, parts_after_command: int) -> li
     if len(chunks) < parts_after_command + 1:
         return None
     return chunks[1:]
+
+
+def _extract_callback_parts(data: str | None, prefix: str, parts: int) -> list[str] | None:
+    suffix = _extract_callback_suffix(data, prefix)
+    if suffix is None:
+        return None
+    values = suffix.split(":")
+    if len(values) != parts:
+        return None
+    return values
 
 
 def _register_public_menu_handlers(
@@ -631,9 +642,43 @@ def _register_admin_event_handlers(  # noqa: PLR0915
             await callback.message.answer(
                 render_roster(roster)
                 if roster is not None
-                else "Список участников пока недоступен."
+                else "Список участников пока недоступен.",
+                reply_markup=roster_actions_keyboard(roster) if roster is not None else None,
             )
         await callback.answer()
+
+    @router.callback_query(F.data.startswith("admin:cancel_override:"))
+    async def admin_cancel_override(callback: CallbackQuery) -> None:
+        callback_parts = _extract_callback_parts(callback.data, "admin:cancel_override:", 2)
+        if callback_parts is None:
+            await callback.answer(_INVALID_CALLBACK_TEXT, show_alert=True)
+            return
+        event_id, telegram_user_id = callback_parts
+        actor = await load_actor(callback.from_user)
+        try:
+            result = await deps.application_service.override_event_registration_cancellation(
+                actor=actor,
+                event_id=event_id,
+                telegram_user_id=telegram_user_id,
+                idempotency_key=f"callback:{callback.id}:{event_id}:{telegram_user_id}",
+            )
+            roster = await deps.application_service.get_event_roster(actor=actor, event_id=event_id)
+        except AuthorizationError:
+            if callback.message is not None:
+                await callback.message.answer(render_admin_denied())
+            await callback.answer()
+            return
+        except (ApplicationError, ValidationError, LookupError) as exc:
+            message = str(exc) if not isinstance(exc, LookupError) else _INVALID_CALLBACK_TEXT
+            await callback.answer(message, show_alert=True)
+            return
+        if isinstance(callback.message, Message) and roster is not None:
+            message = cast(Message, callback.message)
+            await message.edit_text(
+                render_roster(roster),
+                reply_markup=roster_actions_keyboard(roster),
+            )
+        await callback.answer(result)
 
     @router.message(Command("event_name"))
     async def event_name(message: Message) -> None:

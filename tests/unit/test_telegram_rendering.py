@@ -20,6 +20,7 @@ from tea_party_reservation_bot.presentation.telegram.keyboards import (
     admin_menu_keyboard,
     draft_preview_keyboard,
     event_actions_keyboard,
+    roster_actions_keyboard,
     visitor_menu_keyboard,
 )
 from tea_party_reservation_bot.presentation.telegram.renderers import (
@@ -72,6 +73,10 @@ def test_render_roster_uses_multiline_lists() -> None:
             event_id="1",
             tea_name="Шу Пуэр",
             starts_at_local=datetime(2099, 3, 21, 19, 0, tzinfo=load_timezone("Europe/Moscow")),
+            cancel_deadline_at_local=datetime(
+                2099, 3, 21, 15, 0, tzinfo=load_timezone("Europe/Moscow")
+            ),
+            cancel_deadline_passed=True,
             capacity=8,
             reserved_seats=2,
             status="published_open",
@@ -85,8 +90,36 @@ def test_render_roster_uses_multiline_lists() -> None:
 
     text = render_roster(roster)
 
+    assert "Отмена до: 21.03.2099 15:00" in text
+    assert "Доступна админ-отмена" in text
     assert "Подтверждены:\n- Alice (1001)\n- Bob (1002)" in text
     assert "Лист ожидания:\n- Charlie (1003)" in text
+
+
+def test_roster_keyboard_exposes_operational_cancel_buttons() -> None:
+    timezone = load_timezone("Europe/Moscow")
+    roster = EventRosterView(
+        event=AdminEventView(
+            event_id="7",
+            tea_name="Шу Пуэр",
+            starts_at_local=datetime(2099, 3, 21, 19, 0, tzinfo=timezone),
+            cancel_deadline_at_local=datetime(2099, 3, 21, 15, 0, tzinfo=timezone),
+            cancel_deadline_passed=True,
+            capacity=8,
+            reserved_seats=1,
+            status="published_open",
+        ),
+        participants=[
+            ParticipantView(display_name="Alice", telegram_user_id=1001, status="confirmed")
+        ],
+        waitlist=[],
+    )
+
+    keyboard = roster_actions_keyboard(roster)
+
+    assert keyboard is not None
+    assert keyboard.inline_keyboard[0][0].text == "Поздняя отмена 1001"
+    assert keyboard.inline_keyboard[0][0].callback_data == "admin:cancel_override:7:1001"
 
 
 def test_owner_menu_exposes_role_and_settings_buttons() -> None:

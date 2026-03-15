@@ -80,6 +80,8 @@ class AdminEventView:
     event_id: str
     tea_name: str
     starts_at_local: datetime
+    cancel_deadline_at_local: datetime
+    cancel_deadline_passed: bool
     capacity: int
     reserved_seats: int
     status: str
@@ -208,6 +210,10 @@ class AdminEventCommandPort(Protocol):
 
     async def remove_participant(
         self, *, actor: Actor, event_id: str, telegram_user_id: str
+    ) -> str: ...
+
+    async def override_participant_cancellation(
+        self, *, actor: Actor, event_id: str, telegram_user_id: str, idempotency_key: str
     ) -> str: ...
 
     async def move_participant(
@@ -418,6 +424,16 @@ class TelegramBotApplicationService:
             actor=actor,
             event_id=event_id,
             telegram_user_id=telegram_user_id,
+        )
+
+    async def override_event_registration_cancellation(
+        self, *, actor: Actor, event_id: str, telegram_user_id: str, idempotency_key: str
+    ) -> str:
+        return await self.admin_commands.override_participant_cancellation(
+            actor=actor,
+            event_id=event_id,
+            telegram_user_id=telegram_user_id,
+            idempotency_key=idempotency_key,
         )
 
     async def move_event_participant(

@@ -155,7 +155,7 @@ def render_admin_events(events: Sequence[AdminEventView]) -> str:
     if not events:
         return "Событий пока нет."
     return (
-        "Выберите событие для просмотра участников.\n"
+        "Выберите событие для просмотра участников и оперативной отмены.\n"
         "Команды: /event_name, /event_description, /event_start, /event_deadline, "
         "/event_capacity, /event_close, /event_reopen, /event_cancel, "
         "/event_add_confirmed, /event_add_waitlist, /event_remove, /event_move_confirmed, "
@@ -199,6 +199,14 @@ def render_roster(roster: EventRosterView) -> str:
         )
         or "- нет"
     )
+    deadline_note = (
+        "\nСрок самостоятельной отмены прошел. Доступна админ-отмена."
+        if roster.event.cancel_deadline_passed
+        else ""
+    )
     return (
-        f"{escape(roster.event.tea_name)}\nПодтверждены:\n{confirmed}\nЛист ожидания:\n{waitlist}"
+        f"{escape(roster.event.tea_name)}\n"
+        f"Отмена до: {roster.event.cancel_deadline_at_local:%d.%m.%Y %H:%M}"
+        f"{deadline_note}\n"
+        f"Подтверждены:\n{confirmed}\nЛист ожидания:\n{waitlist}"
     )
