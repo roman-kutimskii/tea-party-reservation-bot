@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import cast
 
 from aiogram import Bot
@@ -35,6 +36,8 @@ from tea_party_reservation_bot.metrics import (
 class WorkerRuntime:
     settings: Settings
     scheduler: AsyncIOScheduler
+
+    reconciliation_job_id = "publication-reconciliation"
 
     def run(self) -> None:
         asyncio.run(self._run())
@@ -89,19 +92,28 @@ class WorkerRuntime:
             clock=clock,
             retry_delay_seconds=self.settings.worker.outbox_retry_delay_seconds,
         )
+        processing_lock = asyncio.Lock()
 
         if self.settings.worker.scheduled_reconciliation_enabled:
+            self._configure_scheduled_reconciliation_job(
+                processor=processor,
+                processing_lock=processing_lock,
+            )
             self.scheduler.start()
             logger.info(
                 "worker.scheduler.configured",
                 timezone=self.settings.app.timezone_name,
-                outbox_poll_interval_seconds=self.settings.worker.outbox_poll_interval_seconds,
+                reconciliation_interval_seconds=self.settings.worker.outbox_poll_interval_seconds,
+                outbox_batch_size=self.settings.worker.outbox_batch_size,
             )
 
         logger.info("worker.runtime.started", bot_username=me.username)
         try:
             while True:
-                processed = await processor.run_once(limit=self.settings.worker.outbox_batch_size)
+                async with processing_lock:
+                    processed = await processor.run_once(
+                        limit=self.settings.worker.outbox_batch_size
+                    )
                 logger.info("worker.outbox.tick", processed=processed)
                 await asyncio.sleep(self.settings.worker.outbox_poll_interval_seconds)
         finally:
@@ -112,3 +124,31 @@ class WorkerRuntime:
             if bind is not None:
                 await bind.dispose()
             await bot.session.close()
+
+    def _configure_scheduled_reconciliation_job(
+        self,
+        *,
+        processor: OutboxProcessor,
+        processing_lock: asyncio.Lock,
+    ) -> None:
+        self.scheduler.add_job(
+            self._run_scheduled_reconciliation,
+            trigger="interval",
+            seconds=self.settings.worker.outbox_poll_interval_seconds,
+            id=self.reconciliation_job_id,
+            replace_existing=True,
+            coalesce=True,
+            max_instances=1,
+            next_run_time=datetime.now(tz=UTC),
+            kwargs={"processor": processor, "processing_lock": processing_lock},
+        )
+
+    async def _run_scheduled_reconciliation(
+        self,
+        *,
+        processor: OutboxProcessor,
+        processing_lock: asyncio.Lock,
+    ) -> None:
+        async with processing_lock:
+            processed = await processor.reconcile_once(limit=self.settings.worker.outbox_batch_size)
+        get_logger(__name__).info("worker.reconciliation.tick", processed=processed)

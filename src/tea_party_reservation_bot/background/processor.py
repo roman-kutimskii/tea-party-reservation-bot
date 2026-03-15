@@ -55,10 +55,18 @@ class OutboxProcessor:
     retry_delay_seconds: int
 
     async def run_once(self, *, limit: int = 100) -> int:
-        logger = get_logger(__name__)
         async with self.session_factory() as session:
             messages = await OutboxRepository(session).fetch_pending(self.clock.now(), limit=limit)
+        return await self._process_messages(messages)
 
+    async def reconcile_once(self, *, limit: int = 100) -> int:
+        async with self.session_factory() as session:
+            messages = await OutboxRepository(session).fetch_reconciliation_candidates(limit=limit)
+
+        return await self._process_messages(messages)
+
+    async def _process_messages(self, messages: list[OutboxMessage]) -> int:
+        logger = get_logger(__name__)
         processed = 0
         for message in messages:
             message_id = self._require_message_id(message)

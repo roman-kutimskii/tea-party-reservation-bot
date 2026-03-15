@@ -559,6 +559,36 @@ class OutboxRepository:
             for row in rows
         ]
 
+    async def fetch_reconciliation_candidates(self, *, limit: int = 100) -> list[OutboxMessage]:
+        result = await self.session.execute(
+            select(OutboxEventModel)
+            .where(
+                OutboxEventModel.sent_at.is_(None),
+                OutboxEventModel.event_type == "publication.requested",
+                OutboxEventModel.payload_json["reconciliation_chat_id"].as_integer().is_not(None),
+                OutboxEventModel.payload_json["reconciliation_message_id"]
+                .as_integer()
+                .is_not(None),
+            )
+            .order_by(OutboxEventModel.created_at.asc(), OutboxEventModel.id.asc())
+            .limit(limit)
+            .with_for_update(skip_locked=True)
+        )
+        rows = result.scalars().all()
+        return [
+            OutboxMessage(
+                id=row.id,
+                aggregate_type=row.aggregate_type,
+                aggregate_id=row.aggregate_id,
+                event_type=row.event_type,
+                payload=row.payload_json,
+                available_at=row.available_at,
+                attempt_count=row.attempt_count,
+                last_error=row.last_error,
+            )
+            for row in rows
+        ]
+
     async def mark_sent(self, *, event_id: int, sent_at: datetime) -> None:
         row = await self.session.get(OutboxEventModel, event_id, with_for_update=True)
         if row is None:

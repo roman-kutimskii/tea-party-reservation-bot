@@ -595,6 +595,83 @@ async def test_publication_worker_reconciles_after_telegram_post_succeeds_but_db
 
 
 @pytest.mark.asyncio
+async def test_publication_reconciliation_job_processes_failed_publication_without_waiting(
+    services: dict[str, object],
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    (
+        _user_service,
+        admin_access,
+        event_service,
+        _query_service,
+        _notification_service,
+        publication_service,
+        _registration_service,
+    ) = _services(services)
+    actor = await admin_access.load_actor(1000)
+    timezone = load_timezone("Europe/Moscow")
+    start = datetime.now(tz=UTC) + timedelta(days=6)
+    draft = EventDraft(
+        tea_name="Габа Улун",
+        description="Фоновая реконсиляция публикации",
+        starts_at_local=start.astimezone(timezone),
+        starts_at_utc=start,
+        capacity=5,
+        cancel_deadline_source=CancelDeadlineSource.DEFAULT,
+        cancel_deadline_at_local=(start - timedelta(hours=4)).astimezone(timezone),
+        cancel_deadline_at_utc=start - timedelta(hours=4),
+    )
+    saved = await event_service.save_drafts(actor, [draft])
+    await publication_service.request_single_event_publication(
+        actor=actor,
+        event_id=saved.event_ids[0],
+        idempotency_key="publish-reconciliation-job",
+    )
+
+    flaky_publication_service = FlakyPublicationService(
+        delegate=publication_service,
+        fail_mark_publication_succeeded_times=1,
+    )
+    group_publisher = FakeGroupPublisher(
+        messages=[],
+        edited_messages=[],
+        deleted_messages=[],
+        fail_after_send_times=1,
+    )
+    processor = OutboxProcessor(
+        session_factory=session_factory,
+        publication_service=cast(Any, flaky_publication_service),
+        group_publisher=group_publisher,
+        notifier=FakeNotifier(messages=[]),
+        publication_renderer=TelegramPublicationRenderer(),
+        bot_username="tea_party_bot",
+        group_chat_id=-100123,
+        timezone_name="Europe/Moscow",
+        clock=SystemClock(),
+        retry_delay_seconds=60,
+    )
+
+    first_processed = await processor.run_once(limit=10)
+
+    assert first_processed == 0
+    assert len(group_publisher.messages) == 1
+
+    reconciled = await processor.reconcile_once(limit=10)
+
+    assert reconciled == 1
+    assert len(group_publisher.messages) == 1
+
+    async with session_factory() as session:
+        event = await session.get(EventOccurrenceModel, saved.event_ids[0])
+        outbox = (await session.execute(select(OutboxEventModel))).scalar_one()
+        assert event is not None
+        assert event.status == EventStatus.PUBLISHED_OPEN
+        assert event.telegram_group_chat_id == -100123
+        assert event.telegram_group_message_id == 777
+        assert outbox.sent_at is not None
+
+
+@pytest.mark.asyncio
 async def test_notification_worker_still_sends_direct_message_when_group_edit_rights_are_missing(
     services: dict[str, object],
     session_factory: async_sessionmaker[AsyncSession],
