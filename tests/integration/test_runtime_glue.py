@@ -61,6 +61,8 @@ from tea_party_reservation_bot.infrastructure.telegram.publication import (
 )
 from tea_party_reservation_bot.time import load_timezone
 
+_TIMEZONE_NAME = "Europe/Moscow"
+
 
 @dataclass(slots=True)
 class FakeChat:
@@ -196,6 +198,72 @@ def _make_processor(
         clock=SystemClock(),
         retry_delay_seconds=1,
     )
+
+
+def _event_draft(
+    *,
+    tea_name: str,
+    description: str,
+    start: datetime,
+    capacity: int,
+) -> EventDraft:
+    timezone = load_timezone(_TIMEZONE_NAME)
+    return EventDraft(
+        tea_name=tea_name,
+        description=description,
+        starts_at_local=start.astimezone(timezone),
+        starts_at_utc=start,
+        capacity=capacity,
+        cancel_deadline_source=CancelDeadlineSource.DEFAULT,
+        cancel_deadline_at_local=(start - timedelta(hours=4)).astimezone(timezone),
+        cancel_deadline_at_utc=start - timedelta(hours=4),
+    )
+
+
+async def _queue_single_publication(
+    *,
+    event_service: EventPersistenceService,
+    publication_service: PublicationService,
+    actor: Any,
+    draft: EventDraft,
+    idempotency_key: str,
+) -> int:
+    saved = await event_service.save_drafts(actor, [draft])
+    await publication_service.request_single_event_publication(
+        actor=actor,
+        event_id=saved.event_ids[0],
+        idempotency_key=idempotency_key,
+    )
+    return saved.event_ids[0]
+
+
+async def _register_for_event(
+    registration_service: RegistrationService,
+    *,
+    profile: TelegramProfile,
+    event_id: int,
+    idempotency_key: str,
+) -> None:
+    await registration_service.register(
+        profile=profile,
+        event_id=event_id,
+        idempotency_key=idempotency_key,
+    )
+
+
+async def _ensure_users(
+    user_service: UserApplicationService,
+    users: list[tuple[int, str, str]],
+) -> None:
+    for telegram_user_id, username, first_name in users:
+        await user_service.ensure_user(
+            TelegramProfile(
+                telegram_user_id=telegram_user_id,
+                username=username,
+                first_name=first_name,
+                last_name=None,
+            )
+        )
 
 
 @pytest.mark.asyncio
@@ -1094,22 +1162,18 @@ async def test_admin_edit_after_publish_refreshes_group_post_and_notifies_partic
     ) = _services(services)
     admin_events = cast(AdminEventService, services["admin_events"])
     actor = await admin_access.load_actor(1000)
-    timezone = load_timezone("Europe/Moscow")
+    timezone = load_timezone(_TIMEZONE_NAME)
     start = datetime.now(tz=UTC) + timedelta(days=4)
-    draft = EventDraft(
-        tea_name="Ми Лань Сян",
-        description="До публикации",
-        starts_at_local=start.astimezone(timezone),
-        starts_at_utc=start,
-        capacity=2,
-        cancel_deadline_source=CancelDeadlineSource.DEFAULT,
-        cancel_deadline_at_local=(start - timedelta(hours=4)).astimezone(timezone),
-        cancel_deadline_at_utc=start - timedelta(hours=4),
-    )
-    saved = await event_service.save_drafts(actor, [draft])
-    await publication_service.request_single_event_publication(
+    event_id = await _queue_single_publication(
+        event_service=event_service,
+        publication_service=publication_service,
         actor=actor,
-        event_id=saved.event_ids[0],
+        draft=_event_draft(
+            tea_name="Ми Лань Сян",
+            description="До публикации",
+            start=start,
+            capacity=2,
+        ),
         idempotency_key="publish-edit-after-publish",
     )
 
@@ -1122,14 +1186,15 @@ async def test_admin_edit_after_publish_refreshes_group_post_and_notifies_partic
     )
     assert await publish_processor.run_once(limit=10) == 1
 
-    await registration_service.register(
+    await _register_for_event(
+        registration_service,
         profile=TelegramProfile(
             telegram_user_id=3401,
             username="guest3401",
             first_name="Guest",
             last_name=None,
         ),
-        event_id=saved.event_ids[0],
+        event_id=event_id,
         idempotency_key="edit-after-publish-register",
     )
     assert await publish_processor.run_once(limit=10) == 1
@@ -1137,7 +1202,7 @@ async def test_admin_edit_after_publish_refreshes_group_post_and_notifies_partic
     updated_start = start + timedelta(days=2)
     await admin_events.update_event_fields(
         actor=actor,
-        event_id=saved.event_ids[0],
+        event_id=event_id,
         tea_name="Ми Лань Сян Special",
         starts_at=updated_start,
         cancel_deadline_at=updated_start - timedelta(hours=6),
@@ -1189,22 +1254,18 @@ async def test_close_and_reopen_registration_gate_signups_and_notify_participant
     ) = _services(services)
     admin_events = cast(AdminEventService, services["admin_events"])
     actor = await admin_access.load_actor(1000)
-    timezone = load_timezone("Europe/Moscow")
+    timezone = load_timezone(_TIMEZONE_NAME)
     start = datetime.now(tz=UTC) + timedelta(days=4)
-    draft = EventDraft(
-        tea_name="Шуй Цзинь Гуй",
-        description="Открытие и закрытие",
-        starts_at_local=start.astimezone(timezone),
-        starts_at_utc=start,
-        capacity=2,
-        cancel_deadline_source=CancelDeadlineSource.DEFAULT,
-        cancel_deadline_at_local=(start - timedelta(hours=4)).astimezone(timezone),
-        cancel_deadline_at_utc=start - timedelta(hours=4),
-    )
-    saved = await event_service.save_drafts(actor, [draft])
-    await publication_service.request_single_event_publication(
+    event_id = await _queue_single_publication(
+        event_service=event_service,
+        publication_service=publication_service,
         actor=actor,
-        event_id=saved.event_ids[0],
+        draft=_event_draft(
+            tea_name="Шуй Цзинь Гуй",
+            description="Открытие и закрытие",
+            start=start,
+            capacity=2,
+        ),
         idempotency_key="publish-close-reopen",
     )
 
@@ -1217,28 +1278,30 @@ async def test_close_and_reopen_registration_gate_signups_and_notify_participant
     )
     assert await processor.run_once(limit=10) == 1
 
-    await registration_service.register(
+    await _register_for_event(
+        registration_service,
         profile=TelegramProfile(
             telegram_user_id=3501,
             username="guest3501",
             first_name="Guest",
             last_name=None,
         ),
-        event_id=saved.event_ids[0],
+        event_id=event_id,
         idempotency_key="close-reopen-first",
     )
     assert await processor.run_once(limit=10) == 1
 
-    await admin_events.close_registration(actor=actor, event_id=saved.event_ids[0])
+    await admin_events.close_registration(actor=actor, event_id=event_id)
     with pytest.raises(ConflictError, match="Регистрация на это событие сейчас недоступна"):
-        await registration_service.register(
+        await _register_for_event(
+            registration_service,
             profile=TelegramProfile(
                 telegram_user_id=3502,
                 username="guest3502",
                 first_name="Late",
                 last_name=None,
             ),
-            event_id=saved.event_ids[0],
+            event_id=event_id,
             idempotency_key="close-reopen-blocked",
         )
 
@@ -1260,7 +1323,7 @@ async def test_close_and_reopen_registration_gate_signups_and_notify_participant
         )
     ]
 
-    await admin_events.reopen_registration(actor=actor, event_id=saved.event_ids[0])
+    await admin_events.reopen_registration(actor=actor, event_id=event_id)
     assert await state_processor.run_once(limit=10) == 1
     assert notifier.messages[-1] == (
         3501,
@@ -1277,7 +1340,7 @@ async def test_close_and_reopen_registration_gate_signups_and_notify_participant
             first_name="Late",
             last_name=None,
         ),
-        event_id=saved.event_ids[0],
+        event_id=event_id,
         idempotency_key="close-reopen-opened",
     )
     assert result.outcome == "confirmed"
@@ -1299,38 +1362,24 @@ async def test_manual_roster_changes_send_expected_notifications(
     ) = _services(services)
     admin_events = cast(AdminEventService, services["admin_events"])
     actor = await admin_access.load_actor(1000)
-    timezone = load_timezone("Europe/Moscow")
     start = datetime.now(tz=UTC) + timedelta(days=4)
-    draft = EventDraft(
-        tea_name="Жоу Гуй",
-        description="Ручные изменения состава",
-        starts_at_local=start.astimezone(timezone),
-        starts_at_utc=start,
-        capacity=2,
-        cancel_deadline_source=CancelDeadlineSource.DEFAULT,
-        cancel_deadline_at_local=(start - timedelta(hours=4)).astimezone(timezone),
-        cancel_deadline_at_utc=start - timedelta(hours=4),
-    )
-    saved = await event_service.save_drafts(actor, [draft])
-    await publication_service.request_single_event_publication(
+    event_id = await _queue_single_publication(
+        event_service=event_service,
+        publication_service=publication_service,
         actor=actor,
-        event_id=saved.event_ids[0],
+        draft=_event_draft(
+            tea_name="Жоу Гуй",
+            description="Ручные изменения состава",
+            start=start,
+            capacity=2,
+        ),
         idempotency_key="publish-manual-roster",
     )
 
-    for telegram_user_id, username, first_name in [
-        (3601, "alpha", "Alpha"),
-        (3602, "beta", "Beta"),
-        (3603, "gamma", "Gamma"),
-    ]:
-        await user_service.ensure_user(
-            TelegramProfile(
-                telegram_user_id=telegram_user_id,
-                username=username,
-                first_name=first_name,
-                last_name=None,
-            )
-        )
+    await _ensure_users(
+        user_service,
+        [(3601, "alpha", "Alpha"), (3602, "beta", "Beta"), (3603, "gamma", "Gamma")],
+    )
 
     group_publisher = FakeGroupPublisher(messages=[], edited_messages=[], deleted_messages=[])
     processor = _make_processor(
@@ -1343,36 +1392,36 @@ async def test_manual_roster_changes_send_expected_notifications(
 
     await admin_events.add_participant(
         actor=actor,
-        event_id=saved.event_ids[0],
+        event_id=event_id,
         telegram_user_id=3601,
         target="confirmed",
     )
     await admin_events.add_participant(
         actor=actor,
-        event_id=saved.event_ids[0],
+        event_id=event_id,
         telegram_user_id=3602,
         target="waitlist",
     )
     await admin_events.move_participant(
         actor=actor,
-        event_id=saved.event_ids[0],
+        event_id=event_id,
         telegram_user_id=3602,
         target="confirmed",
     )
     await admin_events.move_participant(
         actor=actor,
-        event_id=saved.event_ids[0],
+        event_id=event_id,
         telegram_user_id=3601,
         target="waitlist",
     )
     await admin_events.remove_participant(
         actor=actor,
-        event_id=saved.event_ids[0],
+        event_id=event_id,
         telegram_user_id=3601,
     )
     await admin_events.add_participant(
         actor=actor,
-        event_id=saved.event_ids[0],
+        event_id=event_id,
         telegram_user_id=3603,
         target="confirmed",
     )
@@ -1430,22 +1479,17 @@ async def test_event_cancellation_notifies_confirmed_and_waitlisted_users(
     ) = _services(services)
     admin_events = cast(AdminEventService, services["admin_events"])
     actor = await admin_access.load_actor(1000)
-    timezone = load_timezone("Europe/Moscow")
     start = datetime.now(tz=UTC) + timedelta(days=4)
-    draft = EventDraft(
-        tea_name="Те Ло Хань",
-        description="Отмена события",
-        starts_at_local=start.astimezone(timezone),
-        starts_at_utc=start,
-        capacity=1,
-        cancel_deadline_source=CancelDeadlineSource.DEFAULT,
-        cancel_deadline_at_local=(start - timedelta(hours=4)).astimezone(timezone),
-        cancel_deadline_at_utc=start - timedelta(hours=4),
-    )
-    saved = await event_service.save_drafts(actor, [draft])
-    await publication_service.request_single_event_publication(
+    event_id = await _queue_single_publication(
+        event_service=event_service,
+        publication_service=publication_service,
         actor=actor,
-        event_id=saved.event_ids[0],
+        draft=_event_draft(
+            tea_name="Те Ло Хань",
+            description="Отмена события",
+            start=start,
+            capacity=1,
+        ),
         idempotency_key="publish-cancel-notify",
     )
 
@@ -1458,29 +1502,31 @@ async def test_event_cancellation_notifies_confirmed_and_waitlisted_users(
     )
     assert await processor.run_once(limit=10) == 1
 
-    await registration_service.register(
+    await _register_for_event(
+        registration_service,
         profile=TelegramProfile(
             telegram_user_id=3701,
             username="guest3701",
             first_name="One",
             last_name=None,
         ),
-        event_id=saved.event_ids[0],
+        event_id=event_id,
         idempotency_key="cancel-notify-confirmed",
     )
-    await registration_service.register(
+    await _register_for_event(
+        registration_service,
         profile=TelegramProfile(
             telegram_user_id=3702,
             username="guest3702",
             first_name="Two",
             last_name=None,
         ),
-        event_id=saved.event_ids[0],
+        event_id=event_id,
         idempotency_key="cancel-notify-waitlist",
     )
     assert await processor.run_once(limit=10) == 2
 
-    await admin_events.cancel_event(actor=actor, event_id=saved.event_ids[0])
+    await admin_events.cancel_event(actor=actor, event_id=event_id)
 
     notifier = FakeNotifier(messages=[])
     notification_processor = _make_processor(
@@ -1511,42 +1557,23 @@ async def test_new_event_announcement_notifications_only_reach_opted_in_users(
         _registration_service,
     ) = _services(services)
     actor = await admin_access.load_actor(1000)
-    timezone = load_timezone("Europe/Moscow")
+    timezone = load_timezone(_TIMEZONE_NAME)
 
-    await user_service.ensure_user(
-        TelegramProfile(
-            telegram_user_id=3801,
-            username="sub3801",
-            first_name="Sub",
-            last_name=None,
-        )
-    )
-    await user_service.ensure_user(
-        TelegramProfile(
-            telegram_user_id=3802,
-            username="muted3802",
-            first_name="Muted",
-            last_name=None,
-        )
-    )
+    await _ensure_users(user_service, [(3801, "sub3801", "Sub"), (3802, "muted3802", "Muted")])
     await notification_service.set_new_events_enabled(3801, True)
     await notification_service.set_new_events_enabled(3802, False)
 
     start = datetime.now(tz=UTC) + timedelta(days=5)
-    draft = EventDraft(
-        tea_name="Фэн Хуан Дань Цун",
-        description="Новый анонс",
-        starts_at_local=start.astimezone(timezone),
-        starts_at_utc=start,
-        capacity=4,
-        cancel_deadline_source=CancelDeadlineSource.DEFAULT,
-        cancel_deadline_at_local=(start - timedelta(hours=4)).astimezone(timezone),
-        cancel_deadline_at_utc=start - timedelta(hours=4),
-    )
-    saved = await event_service.save_drafts(actor, [draft])
-    await publication_service.request_single_event_publication(
+    await _queue_single_publication(
+        event_service=event_service,
+        publication_service=publication_service,
         actor=actor,
-        event_id=saved.event_ids[0],
+        draft=_event_draft(
+            tea_name="Фэн Хуан Дань Цун",
+            description="Новый анонс",
+            start=start,
+            capacity=4,
+        ),
         idempotency_key="publish-new-announcement-only-opted-in",
     )
 
@@ -1590,22 +1617,17 @@ async def test_capacity_reduction_to_confirmed_floor_keeps_waitlist_and_notifies
     ) = _services(services)
     admin_events = cast(AdminEventService, services["admin_events"])
     actor = await admin_access.load_actor(1000)
-    timezone = load_timezone("Europe/Moscow")
     start = datetime.now(tz=UTC) + timedelta(days=4)
-    draft = EventDraft(
-        tea_name="Бай Жуй Сян",
-        description="Снижение вместимости",
-        starts_at_local=start.astimezone(timezone),
-        starts_at_utc=start,
-        capacity=3,
-        cancel_deadline_source=CancelDeadlineSource.DEFAULT,
-        cancel_deadline_at_local=(start - timedelta(hours=4)).astimezone(timezone),
-        cancel_deadline_at_utc=start - timedelta(hours=4),
-    )
-    saved = await event_service.save_drafts(actor, [draft])
-    await publication_service.request_single_event_publication(
+    event_id = await _queue_single_publication(
+        event_service=event_service,
+        publication_service=publication_service,
         actor=actor,
-        event_id=saved.event_ids[0],
+        draft=_event_draft(
+            tea_name="Бай Жуй Сян",
+            description="Снижение вместимости",
+            start=start,
+            capacity=3,
+        ),
         idempotency_key="publish-capacity-floor",
     )
 
@@ -1622,36 +1644,30 @@ async def test_capacity_reduction_to_confirmed_floor_keeps_waitlist_and_notifies
         (3901, "u3901", "One"),
         (3902, "u3902", "Two"),
     ]:
-        await registration_service.register(
+        await _register_for_event(
+            registration_service,
             profile=TelegramProfile(
                 telegram_user_id=telegram_user_id,
                 username=username,
                 first_name=first_name,
                 last_name=None,
             ),
-            event_id=saved.event_ids[0],
+            event_id=event_id,
             idempotency_key=f"capacity-floor-{telegram_user_id}",
         )
     assert await processor.run_once(limit=10) == 2
 
     user_service = cast(UserApplicationService, services["user"])
-    await user_service.ensure_user(
-        TelegramProfile(
-            telegram_user_id=3903,
-            username="u3903",
-            first_name="Three",
-            last_name=None,
-        )
-    )
+    await _ensure_users(user_service, [(3903, "u3903", "Three")])
     await admin_events.add_participant(
         actor=actor,
-        event_id=saved.event_ids[0],
+        event_id=event_id,
         telegram_user_id=3903,
         target="waitlist",
     )
     assert await processor.run_once(limit=10) == 1
 
-    await admin_events.set_capacity(actor=actor, event_id=saved.event_ids[0], capacity=2)
+    await admin_events.set_capacity(actor=actor, event_id=event_id, capacity=2)
 
     notifier = FakeNotifier(messages=[])
     notification_processor = _make_processor(
@@ -1667,7 +1683,7 @@ async def test_capacity_reduction_to_confirmed_floor_keeps_waitlist_and_notifies
     assert any("Свободно мест: 0" in text for _, _, text in group_publisher.edited_messages)
 
     async with session_factory() as session:
-        event = await session.get(EventOccurrenceModel, saved.event_ids[0])
+        event = await session.get(EventOccurrenceModel, event_id)
         confirmed = await session.scalar(
             select(cast(Any, ReservationModel.id)).where(ReservationModel.status == "confirmed")
         )
