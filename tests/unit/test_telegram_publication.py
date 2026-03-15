@@ -56,8 +56,12 @@ def test_batch_publication_renders_hidden_links_without_buttons() -> None:
     first_link = build_event_deep_link(bot_username="tea_party_bot", event_id="event-1")
     second_link = build_event_deep_link(bot_username="tea_party_bot", event_id="event-2")
     assert payload.reply_markup is None
+    assert "Открыть регистрацию" in payload.preview_text
+    assert "<a href=" not in payload.preview_text
     assert f'<a href="{first_link}">Открыть регистрацию</a>' in payload.text
     assert f'<a href="{second_link}">Открыть регистрацию</a>' in payload.text
+    assert payload.deep_links[0].url == first_link
+    assert payload.deep_links[1].url == second_link
 
 
 def test_single_publication_renders_hidden_link_without_button() -> None:
@@ -86,7 +90,11 @@ def test_single_publication_renders_hidden_link_without_button() -> None:
 
     link = build_event_deep_link(bot_username="tea_party_bot", event_id="event-1")
     assert payload.reply_markup is None
+    assert payload.preview_text.endswith("Открыть регистрацию")
     assert f'<a href="{link}">Открыть регистрацию</a>' in payload.text
+    assert payload.deep_links == (payload.deep_links[0],)
+    assert payload.deep_links[0].label == preview.normalized.tea_name
+    assert payload.deep_links[0].url == link
 
 
 def test_published_batch_publication_keeps_one_combined_post_with_distinct_links() -> None:
@@ -125,7 +133,11 @@ def test_published_batch_publication_keeps_one_combined_post_with_distinct_links
     second_link = build_event_deep_link(bot_username="tea_party_bot", event_id="event-2")
 
     assert payload.reply_markup is None
+    assert "Открыть регистрацию" in payload.preview_text
+    assert "<a href=" not in payload.preview_text
     assert payload.text.count("Открыть регистрацию") == 2
     assert f'<a href="{first_link}">Открыть регистрацию</a>' in payload.text
     assert f'<a href="{second_link}">Открыть регистрацию</a>' in payload.text
     assert payload.text.count("\n\n") == 1
+    assert payload.deep_links[0].url == first_link
+    assert payload.deep_links[1].url == second_link

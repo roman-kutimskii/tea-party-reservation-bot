@@ -10,6 +10,12 @@ from tea_party_reservation_bot.application.telegram import (
     RegistrationResult,
     UserRegistrationView,
 )
+from tea_party_reservation_bot.domain.enums import CancelDeadlineSource
+from tea_party_reservation_bot.domain.events import EventDraft, EventPreview
+from tea_party_reservation_bot.infrastructure.telegram.publication import (
+    TelegramDeepLinkPreview,
+    TelegramGroupPostPayload,
+)
 from tea_party_reservation_bot.presentation.telegram.keyboards import (
     admin_menu_keyboard,
     draft_preview_keyboard,
@@ -17,6 +23,7 @@ from tea_party_reservation_bot.presentation.telegram.keyboards import (
     visitor_menu_keyboard,
 )
 from tea_party_reservation_bot.presentation.telegram.renderers import (
+    render_admin_preview,
     render_admin_roles,
     render_event_card,
     render_my_registration,
@@ -156,3 +163,39 @@ def test_render_my_registration_mentions_single_confirmed_seat() -> None:
     text = render_my_registration(registration)
 
     assert "Подтверждено 1 место" in text
+
+
+def test_render_admin_preview_shows_final_post_text_and_link_mapping() -> None:
+    timezone = load_timezone("Europe/Moscow")
+    preview = EventPreview(
+        normalized=EventDraft(
+            tea_name="Да Хун Пао",
+            description="Вечер утесных улунов",
+            starts_at_local=datetime(2099, 3, 21, 19, 0, tzinfo=timezone),
+            starts_at_utc=datetime(2099, 3, 21, 16, 0, tzinfo=load_timezone("UTC")),
+            capacity=12,
+            cancel_deadline_source=CancelDeadlineSource.DEFAULT,
+            cancel_deadline_at_local=datetime(2099, 3, 21, 15, 0, tzinfo=timezone),
+            cancel_deadline_at_utc=datetime(2099, 3, 21, 12, 0, tzinfo=load_timezone("UTC")),
+        ),
+        block_number=1,
+    )
+
+    text = render_admin_preview(
+        [preview],
+        TelegramGroupPostPayload(
+            text='Да Хун Пао\n<a href="https://t.me/tea_party_bot?start=test">Открыть регистрацию</a>',
+            preview_text="Да Хун Пао\nОткрыть регистрацию",
+            deep_links=(
+                TelegramDeepLinkPreview(
+                    label="1. Да Хун Пао",
+                    url="https://t.me/tea_party_bot?start=test",
+                ),
+            ),
+        ),
+    )
+
+    assert "Итоговый пост в группу" in text
+    assert "<pre>Да Хун Пао\nОткрыть регистрацию</pre>" in text
+    assert "Сопоставление ссылок записи" in text
+    assert "1. Да Хун Пао: https://t.me/tea_party_bot?start=test" in text

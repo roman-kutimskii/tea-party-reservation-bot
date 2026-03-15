@@ -23,8 +23,16 @@ def _ensure_message_length(text: str) -> str:
 
 
 @dataclass(slots=True, frozen=True)
+class TelegramDeepLinkPreview:
+    label: str
+    url: str
+
+
+@dataclass(slots=True, frozen=True)
 class TelegramGroupPostPayload:
     text: str
+    preview_text: str
+    deep_links: tuple[TelegramDeepLinkPreview, ...] = ()
     reply_markup: InlineKeyboardMarkup | None = None
 
 
@@ -41,13 +49,26 @@ class TelegramPublicationRenderer:
         preview: EventPreview,
         event_id: str,
     ) -> TelegramGroupPostPayload:
+        registration_url = build_event_deep_link(bot_username=bot_username, event_id=event_id)
         text = self._render_preview_block(
             preview,
             prefix=None,
-            registration_url=build_event_deep_link(bot_username=bot_username, event_id=event_id),
+            registration_line=_render_hidden_link(
+                label="Открыть регистрацию",
+                url=registration_url,
+            ),
+        )
+        preview_text = self._render_preview_block(
+            preview,
+            prefix=None,
+            registration_line="Открыть регистрацию",
         )
         return TelegramGroupPostPayload(
             text=_ensure_message_length(text),
+            preview_text=preview_text,
+            deep_links=(
+                TelegramDeepLinkPreview(label=preview.normalized.tea_name, url=registration_url),
+            ),
         )
 
     def render_batch_post(
@@ -57,22 +78,44 @@ class TelegramPublicationRenderer:
         previews: Sequence[EventPreview],
         event_ids: Sequence[str],
     ) -> TelegramGroupPostPayload:
-        blocks = [
-            self._render_preview_block(
-                preview,
-                prefix=f"{index}.",
-                registration_url=build_event_deep_link(
-                    bot_username=bot_username,
-                    event_id=event_id,
-                ),
+        blocks: list[str] = []
+        preview_blocks: list[str] = []
+        deep_links: list[TelegramDeepLinkPreview] = []
+        for index, (preview, event_id) in enumerate(
+            zip(previews, event_ids, strict=True),
+            start=1,
+        ):
+            registration_url = build_event_deep_link(
+                bot_username=bot_username,
+                event_id=event_id,
             )
-            for index, (preview, event_id) in enumerate(
-                zip(previews, event_ids, strict=True),
-                start=1,
+            prefix = f"{index}."
+            blocks.append(
+                self._render_preview_block(
+                    preview,
+                    prefix=prefix,
+                    registration_line=_render_hidden_link(
+                        label="Открыть регистрацию",
+                        url=registration_url,
+                    ),
+                )
             )
-        ]
+            preview_blocks.append(
+                self._render_preview_block(
+                    preview,
+                    prefix=prefix,
+                    registration_line="Открыть регистрацию",
+                )
+            )
+            deep_links.append(
+                TelegramDeepLinkPreview(
+                    label=f"{index}. {preview.normalized.tea_name}", url=registration_url
+                )
+            )
         return TelegramGroupPostPayload(
             text=_ensure_message_length("\n\n".join(blocks)),
+            preview_text="\n\n".join(preview_blocks),
+            deep_links=tuple(deep_links),
         )
 
     def render_published_event_post(
@@ -81,14 +124,22 @@ class TelegramPublicationRenderer:
         bot_username: str,
         event: PublicEventView,
     ) -> TelegramGroupPostPayload:
+        registration_url = build_event_deep_link(bot_username=bot_username, event_id=event.event_id)
         text = self._render_event_block(
             event,
-            registration_url=build_event_deep_link(
-                bot_username=bot_username, event_id=event.event_id
+            registration_line=_render_hidden_link(
+                label="Открыть регистрацию",
+                url=registration_url,
             ),
+        )
+        preview_text = self._render_event_block(
+            event,
+            registration_line="Открыть регистрацию",
         )
         return TelegramGroupPostPayload(
             text=_ensure_message_length(text),
+            preview_text=preview_text,
+            deep_links=(TelegramDeepLinkPreview(label=event.tea_name, url=registration_url),),
         )
 
     def render_published_batch_post(
@@ -97,19 +148,39 @@ class TelegramPublicationRenderer:
         bot_username: str,
         events: Sequence[PublicEventView],
     ) -> TelegramGroupPostPayload:
-        blocks = [
-            self._render_event_block(
-                event,
-                prefix=f"{index}.",
-                registration_url=build_event_deep_link(
-                    bot_username=bot_username,
-                    event_id=event.event_id,
-                ),
+        blocks: list[str] = []
+        preview_blocks: list[str] = []
+        deep_links: list[TelegramDeepLinkPreview] = []
+        for index, event in enumerate(events, start=1):
+            registration_url = build_event_deep_link(
+                bot_username=bot_username,
+                event_id=event.event_id,
             )
-            for index, event in enumerate(events, start=1)
-        ]
+            prefix = f"{index}."
+            blocks.append(
+                self._render_event_block(
+                    event,
+                    prefix=prefix,
+                    registration_line=_render_hidden_link(
+                        label="Открыть регистрацию",
+                        url=registration_url,
+                    ),
+                )
+            )
+            preview_blocks.append(
+                self._render_event_block(
+                    event,
+                    prefix=prefix,
+                    registration_line="Открыть регистрацию",
+                )
+            )
+            deep_links.append(
+                TelegramDeepLinkPreview(label=f"{index}. {event.tea_name}", url=registration_url)
+            )
         return TelegramGroupPostPayload(
             text=_ensure_message_length("\n\n".join(blocks)),
+            preview_text="\n\n".join(preview_blocks),
+            deep_links=tuple(deep_links),
         )
 
     def _render_preview_block(
@@ -117,7 +188,7 @@ class TelegramPublicationRenderer:
         preview: EventPreview,
         *,
         prefix: str | None,
-        registration_url: str | None = None,
+        registration_line: str | None = None,
     ) -> str:
         event = preview.normalized
         lines = [
@@ -127,10 +198,8 @@ class TelegramPublicationRenderer:
         ]
         if event.description:
             lines.append(f"Описание: {escape(event.description)}")
-        if registration_url:
-            lines.append(
-                f"{_render_hidden_link(label='Открыть регистрацию', url=registration_url)}"
-            )
+        if registration_line:
+            lines.append(registration_line)
         return "\n".join(lines)
 
     def _render_event_block(
@@ -138,7 +207,7 @@ class TelegramPublicationRenderer:
         event: PublicEventView,
         *,
         prefix: str | None = None,
-        registration_url: str | None = None,
+        registration_line: str | None = None,
     ) -> str:
         lines = [
             f"{prefix} {escape(event.tea_name)}" if prefix else escape(event.tea_name),
@@ -147,10 +216,8 @@ class TelegramPublicationRenderer:
         ]
         if event.description:
             lines.append(escape(event.description))
-        if registration_url:
-            lines.append(
-                f"{_render_hidden_link(label='Открыть регистрацию', url=registration_url)}"
-            )
+        if registration_line:
+            lines.append(registration_line)
         return "\n".join(lines)
 
 
@@ -172,12 +239,16 @@ class AiogramGroupPublisher:
         message_id: int,
         payload: TelegramGroupPostPayload,
     ) -> Message:
-        return await self._bot.edit_message_text(
+        result = await self._bot.edit_message_text(
             chat_id=chat_id,
             message_id=message_id,
             text=payload.text,
             reply_markup=payload.reply_markup,
         )
+        if isinstance(result, bool):
+            msg = "Expected Telegram to return the edited message instance."
+            raise RuntimeError(msg)
+        return result
 
 
 class AiogramTelegramNotifier:

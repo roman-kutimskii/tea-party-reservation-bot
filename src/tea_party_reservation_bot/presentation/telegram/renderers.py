@@ -142,7 +142,12 @@ def render_admin_preview(
                 ]
             )
         )
-    parts.append(f"Пост в группу:\n{escape(publication_preview.text)}")
+    parts.append(f"Итоговый пост в группу:\n<pre>{escape(publication_preview.preview_text)}</pre>")
+    if publication_preview.deep_links:
+        deep_link_rows = [
+            f"- {escape(item.label)}: {escape(item.url)}" for item in publication_preview.deep_links
+        ]
+        parts.append("Сопоставление ссылок записи:\n" + "\n".join(deep_link_rows))
     return "\n\n".join(parts)
 
 
