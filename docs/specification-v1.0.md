@@ -178,6 +178,7 @@ Notes:
 - Waitlist is enabled by default for all MVP events.
 - Waitlist order is FIFO by default.
 - A user may not have more than one active waitlist entry for the same event.
+- A visitor may leave their own waitlist entry at any time before promotion or event start.
 - When a confirmed seat becomes free, the next waitlisted user is promoted automatically.
 - Promotion and seat reassignment must be atomic.
 - Promoted user receives a Telegram notification.
@@ -191,6 +192,7 @@ Notes:
 - Admin may optionally override the default deadline for an individual event.
 - Visitor self-cancellation is allowed only on or before the effective deadline.
 - Visitor self-cancellation is blocked after the deadline.
+- Waitlist self-removal is not bound by the cancellation deadline because it does not release a confirmed seat.
 - Admins with sufficient role may override the deadline operationally.
 - Cancelling a confirmed registration releases the seat and may trigger waitlist promotion.
 
@@ -324,6 +326,7 @@ Notes:
 
 - Full event should offer waitlist instead of dead end.
 - Join waitlist message should clearly state this is not yet a confirmed seat.
+- Waitlist UX should clearly state that the visitor can leave the waitlist on their own at any time.
 - Promotion message should clearly state that the registration is now confirmed.
 
 ### 4.9 Admin Draft and Publication UX

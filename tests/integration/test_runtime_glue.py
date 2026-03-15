@@ -781,6 +781,7 @@ async def test_db_backed_ports_show_real_registrations_roster_and_notifications(
 
     my_items = await registration_port.list_user_registrations(telegram_user_id=3002)
     assert len(my_items) == 1
+    assert my_items[0].can_cancel is True
     assert my_items[0].waitlist_position == 1
 
     roster = await event_read_model.get_event_roster(str(saved.event_ids[0]))

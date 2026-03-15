@@ -54,7 +54,7 @@ class RegistrationResult:
 class CancellationResult:
     event_id: int
     user_id: int
-    cancelled_reservation_id: int
+    cancelled_reservation_id: int | None
     promoted_user_id: int | None
     promoted_telegram_user_id: int | None
     message: str
@@ -1119,61 +1119,81 @@ class RegistrationService:
             reservation = await uow.registrations.get_active_reservation(
                 event_id=event_id, user_id=user.id
             )
-            if reservation is None:
+            waitlist_entry = await uow.registrations.get_active_waitlist_entry(
+                event_id=event_id,
+                user_id=user.id,
+            )
+            if reservation is None and waitlist_entry is None:
                 raise NotFoundError("Активная запись не найдена.")
             now = self.clock.now()
-            if now > event.cancel_deadline_at and not override_deadline:
+            if reservation is not None and now > event.cancel_deadline_at and not override_deadline:
                 raise ConflictError("Срок самостоятельной отмены уже истек.")
-
-            reservation.status = ReservationStatus.CANCELLED
-            reservation.cancelled_at = now
-            event.reserved_seats -= 1
-            event.sync_status_from_capacity()
 
             promoted_user_id: int | None = None
             promoted_telegram_user_id: int | None = None
-            next_waitlist_entry = await uow.registrations.next_waitlist_entry_for_promotion(
-                event_id=event.id
-            )
-            if next_waitlist_entry is not None and event.reserved_seats < event.capacity:
-                next_waitlist_entry.status = WaitlistStatus.PROMOTED
-                next_waitlist_entry.promoted_at = now
-                promoted_reservation = await uow.registrations.create_confirmed_reservation(
-                    event_id=event.id,
-                    user_id=next_waitlist_entry.user_id,
-                    source="waitlist_promotion",
-                    promoted_from_waitlist_entry_id=next_waitlist_entry.id,
-                )
-                event.reserved_seats += 1
+            cancelled_reservation_id: int | None = None
+            outbox_event_type: str
+            message: str
+
+            if reservation is not None:
+                reservation.status = ReservationStatus.CANCELLED
+                reservation.cancelled_at = now
+                cancelled_reservation_id = reservation.id
+                event.reserved_seats -= 1
                 event.sync_status_from_capacity()
-                promoted_user_id = next_waitlist_entry.user_id
-                if promoted_user_id is not None:
-                    promoted_user = await uow.users.get_by_id(promoted_user_id)
-                    if promoted_user is not None:
-                        promoted_telegram_user_id = promoted_user.telegram_user_id
-                await uow.outbox.enqueue(
-                    OutboxMessage(
-                        aggregate_type="event_occurrence",
-                        aggregate_id=str(event.id),
-                        event_type="waitlist.promoted",
-                        payload={
-                            "event_id": event.id,
-                            "reservation_id": promoted_reservation.id,
-                            "user_id": promoted_user_id,
-                        },
-                        available_at=now,
-                    )
+
+                next_waitlist_entry = await uow.registrations.next_waitlist_entry_for_promotion(
+                    event_id=event.id
                 )
+                if next_waitlist_entry is not None and event.reserved_seats < event.capacity:
+                    next_waitlist_entry.status = WaitlistStatus.PROMOTED
+                    next_waitlist_entry.promoted_at = now
+                    promoted_reservation = await uow.registrations.create_confirmed_reservation(
+                        event_id=event.id,
+                        user_id=next_waitlist_entry.user_id,
+                        source="waitlist_promotion",
+                        promoted_from_waitlist_entry_id=next_waitlist_entry.id,
+                    )
+                    event.reserved_seats += 1
+                    event.sync_status_from_capacity()
+                    promoted_user_id = next_waitlist_entry.user_id
+                    if promoted_user_id is not None:
+                        promoted_user = await uow.users.get_by_id(promoted_user_id)
+                        if promoted_user is not None:
+                            promoted_telegram_user_id = promoted_user.telegram_user_id
+                    await uow.outbox.enqueue(
+                        OutboxMessage(
+                            aggregate_type="event_occurrence",
+                            aggregate_id=str(event.id),
+                            event_type="waitlist.promoted",
+                            payload={
+                                "event_id": event.id,
+                                "reservation_id": promoted_reservation.id,
+                                "user_id": promoted_user_id,
+                            },
+                            available_at=now,
+                        )
+                    )
+
+                outbox_event_type = "reservation.cancelled"
+                message = "Запись отменена."
+            else:
+                assert waitlist_entry is not None
+                waitlist_entry.status = WaitlistStatus.CANCELLED
+                waitlist_entry.cancelled_at = now
+                await _resequence_waitlist_positions(uow, event.id)
+                outbox_event_type = "waitlist.cancelled"
+                message = "Вы вышли из листа ожидания."
 
             await uow.outbox.enqueue(
                 OutboxMessage(
                     aggregate_type="event_occurrence",
                     aggregate_id=str(event.id),
-                    event_type="reservation.cancelled",
+                    event_type=outbox_event_type,
                     payload={
                         "event_id": event.id,
                         "user_id": user.id,
-                        "reservation_id": reservation.id,
+                        "reservation_id": cancelled_reservation_id,
                     },
                     available_at=now,
                 )
@@ -1182,10 +1202,10 @@ class RegistrationService:
             return CancellationResult(
                 event_id=event.id,
                 user_id=user.id,
-                cancelled_reservation_id=reservation.id,
+                cancelled_reservation_id=cancelled_reservation_id,
                 promoted_user_id=promoted_user_id,
                 promoted_telegram_user_id=promoted_telegram_user_id,
-                message="Запись отменена.",
+                message=message,
             )
 
         return await _run_idempotent(

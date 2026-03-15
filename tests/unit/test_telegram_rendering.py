@@ -177,6 +177,7 @@ def test_render_waitlist_result_clarifies_seat_is_not_confirmed() -> None:
     text = render_registration_result(RegistrationResult(event=event, status="waitlist"))
 
     assert "Это еще не подтвержденное место" in text
+    assert "Выйти из листа ожидания можно в любой момент" in text
     assert "Отмена до:" not in text
 
 
@@ -196,6 +197,27 @@ def test_render_my_registration_mentions_single_confirmed_seat() -> None:
     text = render_my_registration(registration)
 
     assert "Подтверждено 1 место" in text
+
+
+def test_render_my_waitlist_registration_mentions_self_cancellation_rule() -> None:
+    registration = UserRegistrationView(
+        registration_id="reg-2",
+        event_id="event-2",
+        tea_name="Да Хун Пао",
+        starts_at_local=datetime(2099, 3, 22, 19, 0, tzinfo=load_timezone("Europe/Moscow")),
+        cancel_deadline_at_local=datetime(
+            2099, 3, 22, 15, 0, tzinfo=load_timezone("Europe/Moscow")
+        ),
+        status="waitlist",
+        can_cancel=True,
+        waitlist_position=2,
+    )
+
+    text = render_my_registration(registration)
+
+    assert "Лист ожидания" in text
+    assert "Выйти из листа ожидания можно в любой момент" in text
+    assert "Позиция: 2" in text
 
 
 def test_render_admin_preview_shows_final_post_text_and_link_mapping() -> None:

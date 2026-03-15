@@ -207,6 +207,81 @@ async def test_cancellation_promotes_waitlist_entry(
 
 
 @pytest.mark.asyncio
+async def test_waitlist_entry_can_self_cancel_after_deadline(
+    services: dict[str, object], session_factory: async_sessionmaker[AsyncSession]
+) -> None:
+    admin_access = cast(AdminAccessService, services["admin_access"])
+    event_service = cast(EventPersistenceService, services["events"])
+    publication_service = cast(PublicationService, services["publication"])
+    registration_service = cast(RegistrationService, services["registration"])
+    query_service = cast(EventQueryService, services["query"])
+
+    actor = await admin_access.load_actor(1000)
+    start = datetime.now(tz=UTC) + timedelta(days=2)
+    draft = EventDraft(
+        tea_name="Бай Му Дань",
+        description="Лист ожидания после дедлайна",
+        starts_at_local=start,
+        starts_at_utc=start,
+        capacity=1,
+        cancel_deadline_source=CancelDeadlineSource.DEFAULT,
+        cancel_deadline_at_local=start - timedelta(days=1),
+        cancel_deadline_at_utc=start - timedelta(days=1),
+    )
+    saved = await event_service.save_drafts(actor, [draft])
+    requested = await publication_service.request_single_event_publication(
+        actor=actor,
+        event_id=saved.event_ids[0],
+        idempotency_key="publish-waitlist-cancel",
+    )
+    await publication_service.mark_publication_succeeded(
+        batch_id=requested.batch_id or 0,
+        event_ids=list(requested.event_ids),
+        chat_id=-100123,
+        message_id=1002,
+    )
+
+    await registration_service.register(
+        profile=TelegramProfile(
+            telegram_user_id=3051, username="u1", first_name="One", last_name=None
+        ),
+        event_id=saved.event_ids[0],
+        idempotency_key="waitlist-confirmed",
+    )
+    waitlisted = await registration_service.register(
+        profile=TelegramProfile(
+            telegram_user_id=3052, username="u2", first_name="Two", last_name=None
+        ),
+        event_id=saved.event_ids[0],
+        idempotency_key="waitlist-active",
+    )
+
+    assert waitlisted.outcome == "waitlisted"
+
+    cancelled = await registration_service.cancel(
+        telegram_user_id=3052,
+        event_id=saved.event_ids[0],
+        idempotency_key="waitlist-cancelled",
+    )
+
+    assert cancelled.cancelled_reservation_id is None
+    assert cancelled.message == "Вы вышли из листа ожидания."
+    assert await query_service.list_user_active_registrations(3052) == []
+
+    async with session_factory() as session:
+        event = await session.get(EventOccurrenceModel, saved.event_ids[0])
+        waitlist_statuses = (
+            (await session.execute(select(WaitlistEntryModel.status))).scalars().all()
+        )
+        outbox_types = (await session.execute(select(OutboxEventModel.event_type))).scalars().all()
+        assert event is not None
+        assert event.reserved_seats == 1
+        assert event.status == EventStatus.PUBLISHED_FULL
+        assert waitlist_statuses == ["cancelled"]
+        assert "waitlist.cancelled" in outbox_types
+
+
+@pytest.mark.asyncio
 async def test_parallel_last_seat_allocation_results_in_one_confirmed_and_one_waitlisted(
     services: dict[str, object], session_factory: async_sessionmaker[AsyncSession]
 ) -> None:

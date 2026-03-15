@@ -349,7 +349,7 @@ class SqlAlchemyRegistrationCommandPort(RegistrationCommandPort):
                 status="waitlist"
                 if registration.waitlist_position is not None
                 else registration.status,
-                can_cancel=registration.waitlist_position is None,
+                can_cancel=True,
                 waitlist_position=registration.waitlist_position,
             )
             for registration in registrations

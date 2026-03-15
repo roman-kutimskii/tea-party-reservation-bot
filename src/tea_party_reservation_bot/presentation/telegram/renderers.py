@@ -78,7 +78,8 @@ def render_registration_result(result: RegistrationResult) -> str:
     return (
         "Вы в листе ожидания. Это еще не подтвержденное место.\n"
         f"{escape(result.event.tea_name)}\n"
-        f"{result.event.starts_at_local:%d.%m.%Y %H:%M}"
+        f"{result.event.starts_at_local:%d.%m.%Y %H:%M}\n"
+        "Выйти из листа ожидания можно в любой момент в разделе «Мои записи»."
     )
 
 
@@ -95,6 +96,8 @@ def render_my_registration(registration: UserRegistrationView) -> str:
     ]
     if registration.status == "confirmed":
         lines.append(f"Отмена до: {registration.cancel_deadline_at_local:%d.%m %H:%M}")
+    else:
+        lines.append("Выйти из листа ожидания можно в любой момент.")
     if registration.waitlist_position is not None:
         lines.append(f"Позиция: {registration.waitlist_position}")
     return "\n".join(lines)
