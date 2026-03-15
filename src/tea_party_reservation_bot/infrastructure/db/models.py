@@ -100,16 +100,31 @@ class EventOccurrenceModel(TimestampedMixin, Base):
     created_by_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
-    def sync_status_from_capacity(self) -> None:
-        if self.status in {EventStatus.CANCELLED, EventStatus.COMPLETED, EventStatus.DRAFT}:
-            return
-        if self.status == EventStatus.REGISTRATION_CLOSED:
-            return
+    def publish(self) -> None:
         self.status = (
             EventStatus.PUBLISHED_FULL
             if self.reserved_seats >= self.capacity
             else EventStatus.PUBLISHED_OPEN
         )
+
+    def close_registration(self) -> None:
+        self.status = EventStatus.REGISTRATION_CLOSED
+
+    def reopen_registration(self) -> None:
+        self.publish()
+
+    def cancel(self) -> None:
+        self.status = EventStatus.CANCELLED
+
+    def complete(self) -> None:
+        self.status = EventStatus.COMPLETED
+
+    def sync_status_from_capacity(self) -> None:
+        if self.status in {EventStatus.CANCELLED, EventStatus.COMPLETED, EventStatus.DRAFT}:
+            return
+        if self.status == EventStatus.REGISTRATION_CLOSED:
+            return
+        self.publish()
 
 
 class PublicationBatchEventModel(Base):

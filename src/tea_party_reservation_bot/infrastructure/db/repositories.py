@@ -108,12 +108,6 @@ class UserRepository:
         )
 
 
-def _published_event_status(model: EventOccurrenceModel) -> EventStatus:
-    if model.reserved_seats >= model.capacity:
-        return EventStatus.PUBLISHED_FULL
-    return EventStatus.PUBLISHED_OPEN
-
-
 @dataclass(slots=True)
 class RoleRepository:
     session: AsyncSession
@@ -318,7 +312,7 @@ class EventRepository:
             model = await self.get_by_id(event_id, for_update=True)
             if model is None:
                 continue
-            model.status = _published_event_status(model)
+            model.publish()
             model.telegram_group_chat_id = chat_id
             model.telegram_group_message_id = message_id
             model.published_at = published_at

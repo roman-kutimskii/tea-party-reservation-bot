@@ -705,7 +705,7 @@ class AdminEventService:
                         waitlist_entry.status = WaitlistStatus.CANCELLED
                         waitlist_entry.cancelled_at = now
             event.reserved_seats = 0
-            event.status = EventStatus.CANCELLED
+            event.cancel()
             await _enqueue_bulk_notifications(
                 uow,
                 event_id=event.id,
@@ -957,13 +957,13 @@ class AdminEventService:
             admin_user = await _require_existing_user(uow, actor.telegram_user_id)
             event = await _require_mutable_event(uow, event_id, now)
             if closed:
-                event.status = EventStatus.REGISTRATION_CLOSED
+                event.close_registration()
                 action = "event_registration_closed"
                 message = f"Регистрация на событие #{event.id} закрыта."
             else:
                 if event.status != EventStatus.REGISTRATION_CLOSED:
                     raise ConflictError("Регистрация уже открыта.")
-                event.status = EventStatus.PUBLISHED_OPEN
+                event.reopen_registration()
                 await _promote_waitlist_until_capacity(uow, event=event, now=now)
                 event.sync_status_from_capacity()
                 action = "event_registration_reopened"
@@ -1202,7 +1202,10 @@ async def _require_mutable_event(uow: UnitOfWork, event_id: int, now: datetime) 
         raise NotFoundError("Событие не найдено.")
     if event.status == EventStatus.CANCELLED:
         raise ConflictError("Событие уже отменено.")
-    if event.status == EventStatus.COMPLETED or now >= event.starts_at:
+    if event.status == EventStatus.COMPLETED:
+        raise ConflictError("Изменять уже начавшееся событие нельзя.")
+    if now >= event.starts_at:
+        event.complete()
         raise ConflictError("Изменять уже начавшееся событие нельзя.")
     return event
 
