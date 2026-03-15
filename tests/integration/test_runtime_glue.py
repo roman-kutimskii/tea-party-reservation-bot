@@ -33,10 +33,13 @@ from tea_party_reservation_bot.application.telegram import (
 from tea_party_reservation_bot.background.processor import OutboxProcessor
 from tea_party_reservation_bot.domain.enums import CancelDeadlineSource, EventStatus
 from tea_party_reservation_bot.domain.events import EventDraft, EventPreview
+from tea_party_reservation_bot.exceptions import ConflictError
 from tea_party_reservation_bot.infrastructure.db.models import (
     AdminAuditLogModel,
     EventOccurrenceModel,
     OutboxEventModel,
+    ReservationModel,
+    WaitlistEntryModel,
 )
 from tea_party_reservation_bot.infrastructure.db.uow import SqlAlchemyUnitOfWork
 from tea_party_reservation_bot.infrastructure.telegram.backends import (
@@ -171,6 +174,27 @@ def _services(
         cast(NotificationPreferenceService, services["notifications"]),
         cast(PublicationService, services["publication"]),
         cast(RegistrationService, services["registration"]),
+    )
+
+
+def _make_processor(
+    *,
+    session_factory: async_sessionmaker[AsyncSession],
+    publication_service: PublicationService,
+    group_publisher: FakeGroupPublisher,
+    notifier: FakeNotifier,
+) -> OutboxProcessor:
+    return OutboxProcessor(
+        session_factory=session_factory,
+        publication_service=publication_service,
+        group_publisher=group_publisher,
+        notifier=notifier,
+        publication_renderer=TelegramPublicationRenderer(),
+        bot_username="tea_party_bot",
+        group_chat_id=-100123,
+        timezone_name="Europe/Moscow",
+        clock=SystemClock(),
+        retry_delay_seconds=1,
     )
 
 
@@ -1052,6 +1076,610 @@ async def test_worker_sends_announcement_update_and_cancellation_notifications(
         user_id == 3202 and "Событие отменено." in text for user_id, text in state_notifier.messages
     )
     assert len(state_group_publisher.edited_messages) >= 3
+
+
+@pytest.mark.asyncio
+async def test_admin_edit_after_publish_refreshes_group_post_and_notifies_participant(
+    services: dict[str, object],
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    (
+        _user_service,
+        admin_access,
+        event_service,
+        _query_service,
+        _notification_service,
+        publication_service,
+        registration_service,
+    ) = _services(services)
+    admin_events = cast(AdminEventService, services["admin_events"])
+    actor = await admin_access.load_actor(1000)
+    timezone = load_timezone("Europe/Moscow")
+    start = datetime.now(tz=UTC) + timedelta(days=4)
+    draft = EventDraft(
+        tea_name="Ми Лань Сян",
+        description="До публикации",
+        starts_at_local=start.astimezone(timezone),
+        starts_at_utc=start,
+        capacity=2,
+        cancel_deadline_source=CancelDeadlineSource.DEFAULT,
+        cancel_deadline_at_local=(start - timedelta(hours=4)).astimezone(timezone),
+        cancel_deadline_at_utc=start - timedelta(hours=4),
+    )
+    saved = await event_service.save_drafts(actor, [draft])
+    await publication_service.request_single_event_publication(
+        actor=actor,
+        event_id=saved.event_ids[0],
+        idempotency_key="publish-edit-after-publish",
+    )
+
+    group_publisher = FakeGroupPublisher(messages=[], edited_messages=[], deleted_messages=[])
+    publish_processor = _make_processor(
+        session_factory=session_factory,
+        publication_service=publication_service,
+        group_publisher=group_publisher,
+        notifier=FakeNotifier(messages=[]),
+    )
+    assert await publish_processor.run_once(limit=10) == 1
+
+    await registration_service.register(
+        profile=TelegramProfile(
+            telegram_user_id=3401,
+            username="guest3401",
+            first_name="Guest",
+            last_name=None,
+        ),
+        event_id=saved.event_ids[0],
+        idempotency_key="edit-after-publish-register",
+    )
+    assert await publish_processor.run_once(limit=10) == 1
+
+    updated_start = start + timedelta(days=2)
+    await admin_events.update_event_fields(
+        actor=actor,
+        event_id=saved.event_ids[0],
+        tea_name="Ми Лань Сян Special",
+        starts_at=updated_start,
+        cancel_deadline_at=updated_start - timedelta(hours=6),
+    )
+
+    notifier = FakeNotifier(messages=[])
+    notification_processor = _make_processor(
+        session_factory=session_factory,
+        publication_service=publication_service,
+        group_publisher=group_publisher,
+        notifier=notifier,
+    )
+    assert await notification_processor.run_once(limit=10) == 1
+
+    assert notifier.messages == [
+        (
+            3401,
+            "Событие изменено.\n"
+            "Ми Лань Сян Special\n"
+            f"{updated_start.astimezone(timezone):%d.%m.%Y %H:%M}\n"
+            "Изменения:\n"
+            "Название: Ми Лань Сян -> Ми Лань Сян Special\n"
+            f"Начало: {start.astimezone(timezone):%d.%m.%Y %H:%M} -> "
+            f"{updated_start.astimezone(timezone):%d.%m.%Y %H:%M}\n"
+            f"Отмена до: {(start - timedelta(hours=4)).astimezone(timezone):%d.%m.%Y %H:%M} -> "
+            f"{(updated_start - timedelta(hours=6)).astimezone(timezone):%d.%m.%Y %H:%M}",
+        )
+    ]
+    assert any("Ми Лань Сян Special" in text for _, _, text in group_publisher.edited_messages)
+    assert any(
+        f"Дата: {updated_start.astimezone(timezone):%d.%m.%Y %H:%M}" in text
+        for _, _, text in group_publisher.edited_messages
+    )
+
+
+@pytest.mark.asyncio
+async def test_close_and_reopen_registration_gate_signups_and_notify_participants(
+    services: dict[str, object],
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    (
+        _user_service,
+        admin_access,
+        event_service,
+        _query_service,
+        _notification_service,
+        publication_service,
+        registration_service,
+    ) = _services(services)
+    admin_events = cast(AdminEventService, services["admin_events"])
+    actor = await admin_access.load_actor(1000)
+    timezone = load_timezone("Europe/Moscow")
+    start = datetime.now(tz=UTC) + timedelta(days=4)
+    draft = EventDraft(
+        tea_name="Шуй Цзинь Гуй",
+        description="Открытие и закрытие",
+        starts_at_local=start.astimezone(timezone),
+        starts_at_utc=start,
+        capacity=2,
+        cancel_deadline_source=CancelDeadlineSource.DEFAULT,
+        cancel_deadline_at_local=(start - timedelta(hours=4)).astimezone(timezone),
+        cancel_deadline_at_utc=start - timedelta(hours=4),
+    )
+    saved = await event_service.save_drafts(actor, [draft])
+    await publication_service.request_single_event_publication(
+        actor=actor,
+        event_id=saved.event_ids[0],
+        idempotency_key="publish-close-reopen",
+    )
+
+    group_publisher = FakeGroupPublisher(messages=[], edited_messages=[], deleted_messages=[])
+    processor = _make_processor(
+        session_factory=session_factory,
+        publication_service=publication_service,
+        group_publisher=group_publisher,
+        notifier=FakeNotifier(messages=[]),
+    )
+    assert await processor.run_once(limit=10) == 1
+
+    await registration_service.register(
+        profile=TelegramProfile(
+            telegram_user_id=3501,
+            username="guest3501",
+            first_name="Guest",
+            last_name=None,
+        ),
+        event_id=saved.event_ids[0],
+        idempotency_key="close-reopen-first",
+    )
+    assert await processor.run_once(limit=10) == 1
+
+    await admin_events.close_registration(actor=actor, event_id=saved.event_ids[0])
+    with pytest.raises(ConflictError, match="Регистрация на это событие сейчас недоступна"):
+        await registration_service.register(
+            profile=TelegramProfile(
+                telegram_user_id=3502,
+                username="guest3502",
+                first_name="Late",
+                last_name=None,
+            ),
+            event_id=saved.event_ids[0],
+            idempotency_key="close-reopen-blocked",
+        )
+
+    notifier = FakeNotifier(messages=[])
+    state_processor = _make_processor(
+        session_factory=session_factory,
+        publication_service=publication_service,
+        group_publisher=group_publisher,
+        notifier=notifier,
+    )
+    assert await state_processor.run_once(limit=10) == 1
+    assert notifier.messages == [
+        (
+            3501,
+            "Событие изменено.\n"
+            "Шуй Цзинь Гуй\n"
+            f"{start.astimezone(timezone):%d.%m.%Y %H:%M}\n"
+            "Регистрация закрыта администратором.",
+        )
+    ]
+
+    await admin_events.reopen_registration(actor=actor, event_id=saved.event_ids[0])
+    assert await state_processor.run_once(limit=10) == 1
+    assert notifier.messages[-1] == (
+        3501,
+        "Событие изменено.\n"
+        "Шуй Цзинь Гуй\n"
+        f"{start.astimezone(timezone):%d.%m.%Y %H:%M}\n"
+        "Регистрация снова открыта.",
+    )
+
+    result = await registration_service.register(
+        profile=TelegramProfile(
+            telegram_user_id=3502,
+            username="guest3502",
+            first_name="Late",
+            last_name=None,
+        ),
+        event_id=saved.event_ids[0],
+        idempotency_key="close-reopen-opened",
+    )
+    assert result.outcome == "confirmed"
+
+
+@pytest.mark.asyncio
+async def test_manual_roster_changes_send_expected_notifications(
+    services: dict[str, object],
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    (
+        user_service,
+        admin_access,
+        event_service,
+        _query_service,
+        _notification_service,
+        publication_service,
+        _registration_service,
+    ) = _services(services)
+    admin_events = cast(AdminEventService, services["admin_events"])
+    actor = await admin_access.load_actor(1000)
+    timezone = load_timezone("Europe/Moscow")
+    start = datetime.now(tz=UTC) + timedelta(days=4)
+    draft = EventDraft(
+        tea_name="Жоу Гуй",
+        description="Ручные изменения состава",
+        starts_at_local=start.astimezone(timezone),
+        starts_at_utc=start,
+        capacity=2,
+        cancel_deadline_source=CancelDeadlineSource.DEFAULT,
+        cancel_deadline_at_local=(start - timedelta(hours=4)).astimezone(timezone),
+        cancel_deadline_at_utc=start - timedelta(hours=4),
+    )
+    saved = await event_service.save_drafts(actor, [draft])
+    await publication_service.request_single_event_publication(
+        actor=actor,
+        event_id=saved.event_ids[0],
+        idempotency_key="publish-manual-roster",
+    )
+
+    for telegram_user_id, username, first_name in [
+        (3601, "alpha", "Alpha"),
+        (3602, "beta", "Beta"),
+        (3603, "gamma", "Gamma"),
+    ]:
+        await user_service.ensure_user(
+            TelegramProfile(
+                telegram_user_id=telegram_user_id,
+                username=username,
+                first_name=first_name,
+                last_name=None,
+            )
+        )
+
+    group_publisher = FakeGroupPublisher(messages=[], edited_messages=[], deleted_messages=[])
+    processor = _make_processor(
+        session_factory=session_factory,
+        publication_service=publication_service,
+        group_publisher=group_publisher,
+        notifier=FakeNotifier(messages=[]),
+    )
+    assert await processor.run_once(limit=10) == 1
+
+    await admin_events.add_participant(
+        actor=actor,
+        event_id=saved.event_ids[0],
+        telegram_user_id=3601,
+        target="confirmed",
+    )
+    await admin_events.add_participant(
+        actor=actor,
+        event_id=saved.event_ids[0],
+        telegram_user_id=3602,
+        target="waitlist",
+    )
+    await admin_events.move_participant(
+        actor=actor,
+        event_id=saved.event_ids[0],
+        telegram_user_id=3602,
+        target="confirmed",
+    )
+    await admin_events.move_participant(
+        actor=actor,
+        event_id=saved.event_ids[0],
+        telegram_user_id=3601,
+        target="waitlist",
+    )
+    await admin_events.remove_participant(
+        actor=actor,
+        event_id=saved.event_ids[0],
+        telegram_user_id=3601,
+    )
+    await admin_events.add_participant(
+        actor=actor,
+        event_id=saved.event_ids[0],
+        telegram_user_id=3603,
+        target="confirmed",
+    )
+
+    notifier = FakeNotifier(messages=[])
+    notification_processor = _make_processor(
+        session_factory=session_factory,
+        publication_service=publication_service,
+        group_publisher=group_publisher,
+        notifier=notifier,
+    )
+    processed = await notification_processor.run_once(limit=20)
+
+    assert processed == 6
+    assert any(
+        user_id == 3601 and text.startswith("Вы записаны на дегустацию.")
+        for user_id, text in notifier.messages
+    )
+    assert any(
+        user_id == 3601 and text.startswith("Вы добавлены в лист ожидания.")
+        for user_id, text in notifier.messages
+    )
+    assert any(
+        user_id == 3601 and text.startswith("Вы удалены из листа ожидания.")
+        for user_id, text in notifier.messages
+    )
+    assert any(
+        user_id == 3602 and text.startswith("Вы добавлены в лист ожидания.")
+        for user_id, text in notifier.messages
+    )
+    assert any(
+        user_id == 3602 and text.startswith("Освободилось место.")
+        for user_id, text in notifier.messages
+    )
+    assert any(
+        user_id == 3603 and text.startswith("Вы записаны на дегустацию.")
+        for user_id, text in notifier.messages
+    )
+    assert len(group_publisher.edited_messages) >= 6
+
+
+@pytest.mark.asyncio
+async def test_event_cancellation_notifies_confirmed_and_waitlisted_users(
+    services: dict[str, object],
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    (
+        _user_service,
+        admin_access,
+        event_service,
+        _query_service,
+        _notification_service,
+        publication_service,
+        registration_service,
+    ) = _services(services)
+    admin_events = cast(AdminEventService, services["admin_events"])
+    actor = await admin_access.load_actor(1000)
+    timezone = load_timezone("Europe/Moscow")
+    start = datetime.now(tz=UTC) + timedelta(days=4)
+    draft = EventDraft(
+        tea_name="Те Ло Хань",
+        description="Отмена события",
+        starts_at_local=start.astimezone(timezone),
+        starts_at_utc=start,
+        capacity=1,
+        cancel_deadline_source=CancelDeadlineSource.DEFAULT,
+        cancel_deadline_at_local=(start - timedelta(hours=4)).astimezone(timezone),
+        cancel_deadline_at_utc=start - timedelta(hours=4),
+    )
+    saved = await event_service.save_drafts(actor, [draft])
+    await publication_service.request_single_event_publication(
+        actor=actor,
+        event_id=saved.event_ids[0],
+        idempotency_key="publish-cancel-notify",
+    )
+
+    group_publisher = FakeGroupPublisher(messages=[], edited_messages=[], deleted_messages=[])
+    processor = _make_processor(
+        session_factory=session_factory,
+        publication_service=publication_service,
+        group_publisher=group_publisher,
+        notifier=FakeNotifier(messages=[]),
+    )
+    assert await processor.run_once(limit=10) == 1
+
+    await registration_service.register(
+        profile=TelegramProfile(
+            telegram_user_id=3701,
+            username="guest3701",
+            first_name="One",
+            last_name=None,
+        ),
+        event_id=saved.event_ids[0],
+        idempotency_key="cancel-notify-confirmed",
+    )
+    await registration_service.register(
+        profile=TelegramProfile(
+            telegram_user_id=3702,
+            username="guest3702",
+            first_name="Two",
+            last_name=None,
+        ),
+        event_id=saved.event_ids[0],
+        idempotency_key="cancel-notify-waitlist",
+    )
+    assert await processor.run_once(limit=10) == 2
+
+    await admin_events.cancel_event(actor=actor, event_id=saved.event_ids[0])
+
+    notifier = FakeNotifier(messages=[])
+    notification_processor = _make_processor(
+        session_factory=session_factory,
+        publication_service=publication_service,
+        group_publisher=group_publisher,
+        notifier=notifier,
+    )
+    assert await notification_processor.run_once(limit=10) == 2
+
+    assert {user_id for user_id, _ in notifier.messages} == {3701, 3702}
+    assert all(text.startswith("Событие отменено.") for _, text in notifier.messages)
+    assert len(group_publisher.edited_messages) >= 4
+
+
+@pytest.mark.asyncio
+async def test_new_event_announcement_notifications_only_reach_opted_in_users(
+    services: dict[str, object],
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    (
+        user_service,
+        admin_access,
+        event_service,
+        _query_service,
+        notification_service,
+        publication_service,
+        _registration_service,
+    ) = _services(services)
+    actor = await admin_access.load_actor(1000)
+    timezone = load_timezone("Europe/Moscow")
+
+    await user_service.ensure_user(
+        TelegramProfile(
+            telegram_user_id=3801,
+            username="sub3801",
+            first_name="Sub",
+            last_name=None,
+        )
+    )
+    await user_service.ensure_user(
+        TelegramProfile(
+            telegram_user_id=3802,
+            username="muted3802",
+            first_name="Muted",
+            last_name=None,
+        )
+    )
+    await notification_service.set_new_events_enabled(3801, True)
+    await notification_service.set_new_events_enabled(3802, False)
+
+    start = datetime.now(tz=UTC) + timedelta(days=5)
+    draft = EventDraft(
+        tea_name="Фэн Хуан Дань Цун",
+        description="Новый анонс",
+        starts_at_local=start.astimezone(timezone),
+        starts_at_utc=start,
+        capacity=4,
+        cancel_deadline_source=CancelDeadlineSource.DEFAULT,
+        cancel_deadline_at_local=(start - timedelta(hours=4)).astimezone(timezone),
+        cancel_deadline_at_utc=start - timedelta(hours=4),
+    )
+    saved = await event_service.save_drafts(actor, [draft])
+    await publication_service.request_single_event_publication(
+        actor=actor,
+        event_id=saved.event_ids[0],
+        idempotency_key="publish-new-announcement-only-opted-in",
+    )
+
+    notifier = FakeNotifier(messages=[])
+    group_publisher = FakeGroupPublisher(messages=[], edited_messages=[], deleted_messages=[])
+    processor = _make_processor(
+        session_factory=session_factory,
+        publication_service=publication_service,
+        group_publisher=group_publisher,
+        notifier=notifier,
+    )
+    assert await processor.run_once(limit=10) == 1
+    assert notifier.messages == []
+
+    assert await processor.run_once(limit=10) == 1
+    assert notifier.messages == [
+        (
+            3801,
+            "Анонс новой дегустации.\n"
+            "Фэн Хуан Дань Цун\n"
+            f"{start.astimezone(timezone):%d.%m.%Y %H:%M}\n"
+            "Записаться: https://t.me/tea_party_bot?start=event-MQ",
+        )
+    ]
+    assert group_publisher.edited_messages == []
+
+
+@pytest.mark.asyncio
+async def test_capacity_reduction_to_confirmed_floor_keeps_waitlist_and_notifies_all_active_users(
+    services: dict[str, object],
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    (
+        _user_service,
+        admin_access,
+        event_service,
+        _query_service,
+        _notification_service,
+        publication_service,
+        registration_service,
+    ) = _services(services)
+    admin_events = cast(AdminEventService, services["admin_events"])
+    actor = await admin_access.load_actor(1000)
+    timezone = load_timezone("Europe/Moscow")
+    start = datetime.now(tz=UTC) + timedelta(days=4)
+    draft = EventDraft(
+        tea_name="Бай Жуй Сян",
+        description="Снижение вместимости",
+        starts_at_local=start.astimezone(timezone),
+        starts_at_utc=start,
+        capacity=3,
+        cancel_deadline_source=CancelDeadlineSource.DEFAULT,
+        cancel_deadline_at_local=(start - timedelta(hours=4)).astimezone(timezone),
+        cancel_deadline_at_utc=start - timedelta(hours=4),
+    )
+    saved = await event_service.save_drafts(actor, [draft])
+    await publication_service.request_single_event_publication(
+        actor=actor,
+        event_id=saved.event_ids[0],
+        idempotency_key="publish-capacity-floor",
+    )
+
+    group_publisher = FakeGroupPublisher(messages=[], edited_messages=[], deleted_messages=[])
+    processor = _make_processor(
+        session_factory=session_factory,
+        publication_service=publication_service,
+        group_publisher=group_publisher,
+        notifier=FakeNotifier(messages=[]),
+    )
+    assert await processor.run_once(limit=10) == 1
+
+    for telegram_user_id, username, first_name in [
+        (3901, "u3901", "One"),
+        (3902, "u3902", "Two"),
+    ]:
+        await registration_service.register(
+            profile=TelegramProfile(
+                telegram_user_id=telegram_user_id,
+                username=username,
+                first_name=first_name,
+                last_name=None,
+            ),
+            event_id=saved.event_ids[0],
+            idempotency_key=f"capacity-floor-{telegram_user_id}",
+        )
+    assert await processor.run_once(limit=10) == 2
+
+    user_service = cast(UserApplicationService, services["user"])
+    await user_service.ensure_user(
+        TelegramProfile(
+            telegram_user_id=3903,
+            username="u3903",
+            first_name="Three",
+            last_name=None,
+        )
+    )
+    await admin_events.add_participant(
+        actor=actor,
+        event_id=saved.event_ids[0],
+        telegram_user_id=3903,
+        target="waitlist",
+    )
+    assert await processor.run_once(limit=10) == 1
+
+    await admin_events.set_capacity(actor=actor, event_id=saved.event_ids[0], capacity=2)
+
+    notifier = FakeNotifier(messages=[])
+    notification_processor = _make_processor(
+        session_factory=session_factory,
+        publication_service=publication_service,
+        group_publisher=group_publisher,
+        notifier=notifier,
+    )
+    assert await notification_processor.run_once(limit=10) == 3
+
+    assert {user_id for user_id, _ in notifier.messages} == {3901, 3902, 3903}
+    assert all("Вместимость изменена: 3 -> 2." in text for _, text in notifier.messages)
+    assert any("Свободно мест: 0" in text for _, _, text in group_publisher.edited_messages)
+
+    async with session_factory() as session:
+        event = await session.get(EventOccurrenceModel, saved.event_ids[0])
+        confirmed = await session.scalar(
+            select(cast(Any, ReservationModel.id)).where(ReservationModel.status == "confirmed")
+        )
+        waitlist = await session.scalar(
+            select(cast(Any, WaitlistEntryModel.id)).where(WaitlistEntryModel.status == "active")
+        )
+        assert event is not None
+        assert event.capacity == 2
+        assert event.reserved_seats == 2
+        assert event.status == EventStatus.PUBLISHED_FULL
+        assert confirmed is not None
+        assert waitlist is not None
 
 
 @pytest.mark.asyncio
