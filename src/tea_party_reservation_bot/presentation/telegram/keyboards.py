@@ -130,7 +130,13 @@ def roster_actions_keyboard(roster: EventRosterView) -> InlineKeyboardMarkup | N
         [
             InlineKeyboardButton(
                 text=(
-                    f"{'Поздняя отмена' if roster.event.cancel_deadline_passed else 'Отменить запись'} "
+                    f"{
+                        (
+                            'Поздняя отмена'
+                            if roster.event.cancel_deadline_passed
+                            else 'Отменить запись'
+                        )
+                    } "
                     f"{participant.telegram_user_id}"
                 ),
                 callback_data=(

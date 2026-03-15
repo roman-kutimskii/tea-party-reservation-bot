@@ -217,7 +217,10 @@ def test_render_admin_preview_shows_final_post_text_and_link_mapping() -> None:
     text = render_admin_preview(
         [preview],
         TelegramGroupPostPayload(
-            text='Да Хун Пао\n<a href="https://t.me/tea_party_bot?start=test">Открыть регистрацию</a>',
+            text=(
+                'Да Хун Пао\n<a href="https://t.me/tea_party_bot?start=test">'
+                "Открыть регистрацию</a>"
+            ),
             preview_text="Да Хун Пао\nОткрыть регистрацию",
             deep_links=(
                 TelegramDeepLinkPreview(

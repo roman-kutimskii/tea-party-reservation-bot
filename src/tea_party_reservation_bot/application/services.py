@@ -1394,7 +1394,7 @@ async def _append_draft_saved_audit_log(
     )
 
 
-async def _append_publication_requested_audit_log(
+async def _append_publication_requested_audit_log(  # noqa: PLR0913
     uow: UnitOfWork,
     *,
     actor_user_id: int,

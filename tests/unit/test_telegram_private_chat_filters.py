@@ -39,7 +39,7 @@ def _build_callback(*, chat_type: str, data: str) -> CallbackQuery:
 
 
 def _build_dispatcher() -> tuple[Bot, Dispatcher]:
-    bot = Bot(token="123456:TEST")
+    bot = Bot(token="123456:TEST")  # noqa: S106
     application_service = SimpleNamespace(sync_profile=AsyncMock())
     dispatcher = Dispatcher()
     dispatcher.include_router(
