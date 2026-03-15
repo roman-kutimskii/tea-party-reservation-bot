@@ -123,6 +123,30 @@ class AdminAccessService:
 
 
 @dataclass(slots=True)
+class AdminAuditService:
+    uow_factory: Callable[[], UnitOfWork]
+
+    async def record(
+        self,
+        *,
+        actor: Actor,
+        action: str,
+        target_type: str,
+        target_id: str,
+        payload_json: dict[str, Any],
+    ) -> None:
+        async with self.uow_factory() as uow:
+            admin_user = await _require_existing_user(uow, actor.telegram_user_id)
+            await uow.audit_log.append(
+                actor_user_id=admin_user.id,
+                action=action,
+                target_type=target_type,
+                target_id=target_id,
+                payload_json=payload_json,
+            )
+
+
+@dataclass(slots=True)
 class EventPersistenceService:
     uow_factory: Callable[[], UnitOfWork]
     authorization_service: AuthorizationService

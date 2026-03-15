@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import cast
+from typing import Any, cast
 
 import pytest
 from sqlalchemy import select
@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from tea_party_reservation_bot.application.services import (
     AdminAccessService,
+    AdminAuditService,
     EventPersistenceService,
     EventQueryService,
     NotificationPreferenceService,
@@ -18,14 +19,21 @@ from tea_party_reservation_bot.application.services import (
     SystemClock,
     UserApplicationService,
 )
-from tea_party_reservation_bot.application.telegram import TelegramUserProfile
+from tea_party_reservation_bot.application.security import DomainAuthorizationService
+from tea_party_reservation_bot.application.contracts import UnitOfWork
+from tea_party_reservation_bot.application.telegram import (
+    TelegramBotApplicationService,
+    TelegramUserProfile,
+)
 from tea_party_reservation_bot.background.processor import OutboxProcessor
 from tea_party_reservation_bot.domain.enums import CancelDeadlineSource, EventStatus
 from tea_party_reservation_bot.domain.events import EventDraft, EventPreview
 from tea_party_reservation_bot.infrastructure.db.models import (
+    AdminAuditLogModel,
     EventOccurrenceModel,
     OutboxEventModel,
 )
+from tea_party_reservation_bot.infrastructure.db.uow import SqlAlchemyUnitOfWork
 from tea_party_reservation_bot.infrastructure.telegram.backends import (
     SqlAlchemyAdminRoleRepository,
     SqlAlchemyEventReadModelPort,
@@ -334,3 +342,133 @@ async def test_db_backed_ports_show_real_registrations_roster_and_notifications(
             select(EventOccurrenceModel.status).where(EventOccurrenceModel.id == saved.event_ids[0])
         )
         assert batch_status == EventStatus.PUBLISHED_FULL
+
+
+@pytest.mark.asyncio
+async def test_admin_sensitive_reads_are_audited(
+    services: dict[str, object],
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    (
+        user_service,
+        admin_access,
+        event_service,
+        query_service,
+        _notification_service,
+        publication_service,
+        registration_service,
+    ) = _services(services)
+    timezone = load_timezone("Europe/Moscow")
+    auth = DomainAuthorizationService()
+    event_read_model = SqlAlchemyEventReadModelPort(
+        session_factory=session_factory,
+        timezone=timezone,
+    )
+    registration_port = SqlAlchemyRegistrationCommandPort(
+        registration_service=registration_service,
+        query_service=query_service,
+        events=event_read_model,
+    )
+    user_sync = SqlAlchemyTelegramUserSyncPort(user_service)
+    actor = await admin_access.load_actor(1000)
+
+    app_service = TelegramBotApplicationService(
+        roles=SqlAlchemyAdminRoleRepository(session_factory),
+        authorization_service=auth,
+        drafting_service=cast(Any, object()),
+        admin_audit=AdminAuditService(
+            cast(Any, cast("Any", lambda: cast(UnitOfWork, SqlAlchemyUnitOfWork(session_factory))))
+        ),
+        user_sync=cast(Any, user_sync),
+        events=event_read_model,
+        registrations=cast(Any, registration_port),
+        notifications=cast(Any, object()),
+        publication=cast(Any, object()),
+        admin_commands=cast(Any, object()),
+    )
+
+    start = datetime.now(tz=UTC) + timedelta(days=3)
+    draft = EventDraft(
+        tea_name="Бай Му Дань",
+        description="Проверка аудита",
+        starts_at_local=start.astimezone(timezone),
+        starts_at_utc=start,
+        capacity=1,
+        cancel_deadline_source=CancelDeadlineSource.DEFAULT,
+        cancel_deadline_at_local=(start - timedelta(hours=4)).astimezone(timezone),
+        cancel_deadline_at_utc=start - timedelta(hours=4),
+    )
+    saved = await event_service.save_drafts(actor, [draft])
+    requested = await publication_service.request_single_event_publication(
+        actor=actor,
+        event_id=saved.event_ids[0],
+        idempotency_key="publish-audit-read",
+    )
+    await publication_service.mark_publication_succeeded(
+        batch_id=requested.batch_id or 0,
+        event_ids=list(requested.event_ids),
+        chat_id=-100123,
+        message_id=777,
+    )
+
+    await user_sync.upsert_user(
+        TelegramUserProfile(
+            telegram_user_id=3101,
+            username="reader1",
+            first_name="Reader",
+            last_name="One",
+        )
+    )
+    await user_sync.upsert_user(
+        TelegramUserProfile(
+            telegram_user_id=3102,
+            username="reader2",
+            first_name="Reader",
+            last_name="Two",
+        )
+    )
+    await registration_port.register_for_event(
+        telegram_user_id=3101,
+        event_id=str(saved.event_ids[0]),
+        idempotency_key="audit-read-r1",
+    )
+    await registration_port.register_for_event(
+        telegram_user_id=3102,
+        event_id=str(saved.event_ids[0]),
+        idempotency_key="audit-read-r2",
+    )
+
+    events = await app_service.list_admin_events(actor)
+    roster = await app_service.get_event_roster(actor=actor, event_id=str(saved.event_ids[0]))
+
+    assert len(events) == 1
+    assert roster is not None
+    assert len(roster.participants) == 1
+    assert len(roster.waitlist) == 1
+
+    async with session_factory() as session:
+        audit_rows = (
+            (
+                await session.execute(
+                    select(AdminAuditLogModel)
+                    .where(
+                        AdminAuditLogModel.action.in_(
+                            ["admin_events_listed", "event_roster_viewed"]
+                        )
+                    )
+                    .order_by(AdminAuditLogModel.id.asc())
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    assert [row.action for row in audit_rows] == ["admin_events_listed", "event_roster_viewed"]
+    assert audit_rows[0].target_id == "*"
+    assert audit_rows[0].payload_json == {"event_count": 1}
+    assert audit_rows[1].target_id == str(saved.event_ids[0])
+    assert audit_rows[1].payload_json == {
+        "found": True,
+        "confirmed_count": 1,
+        "waitlist_count": 1,
+    }

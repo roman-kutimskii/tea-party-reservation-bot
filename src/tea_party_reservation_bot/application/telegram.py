@@ -14,8 +14,12 @@ from tea_party_reservation_bot.domain.events import EventPreview
 from tea_party_reservation_bot.domain.rbac import Actor, RoleSet
 
 if TYPE_CHECKING:
-    from tea_party_reservation_bot.application.services import EventDraftingService
+    from tea_party_reservation_bot.application.services import (
+        AdminAuditService,
+        EventDraftingService,
+    )
 else:
+    AdminAuditService = Any
     EventDraftingService = Any
 
 
@@ -204,6 +208,7 @@ class TelegramBotApplicationService:
     roles: AdminRoleRepository
     authorization_service: AuthorizationService
     drafting_service: EventDraftingService
+    admin_audit: AdminAuditService
     user_sync: TelegramUserSyncPort
     events: EventReadModelPort
     registrations: RegistrationCommandPort
@@ -267,11 +272,31 @@ class TelegramBotApplicationService:
 
     async def list_admin_events(self, actor: Actor) -> Sequence[AdminEventView]:
         self.authorization_service.require(actor, Permission.VIEW_EVENTS)
-        return await self.events.list_admin_events()
+        events = await self.events.list_admin_events()
+        await self.admin_audit.record(
+            actor=actor,
+            action="admin_events_listed",
+            target_type="event_occurrence",
+            target_id="*",
+            payload_json={"event_count": len(events)},
+        )
+        return events
 
     async def get_event_roster(self, *, actor: Actor, event_id: str) -> EventRosterView | None:
         self.authorization_service.require(actor, Permission.MANAGE_REGISTRATIONS)
-        return await self.events.get_event_roster(event_id)
+        roster = await self.events.get_event_roster(event_id)
+        await self.admin_audit.record(
+            actor=actor,
+            action="event_roster_viewed",
+            target_type="event_occurrence",
+            target_id=event_id,
+            payload_json={
+                "found": roster is not None,
+                "confirmed_count": len(roster.participants) if roster is not None else 0,
+                "waitlist_count": len(roster.waitlist) if roster is not None else 0,
+            },
+        )
+        return roster
 
     def preview_single_event(self, actor: Actor, raw_text: str) -> EventPreview:
         return self.drafting_service.preview_from_text(actor, raw_text)[0]

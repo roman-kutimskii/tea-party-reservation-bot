@@ -13,6 +13,7 @@ from tea_party_reservation_bot.application.contracts import UnitOfWork
 from tea_party_reservation_bot.application.security import DomainAuthorizationService
 from tea_party_reservation_bot.application.services import (
     AdminEventService,
+    AdminAuditService,
     EventDraftingService,
     EventPersistenceService,
     EventQueryService,
@@ -86,6 +87,7 @@ class BotRuntime:
                 authorization_service=authorization_service,
                 timezone_name=self.settings.app.timezone_name,
             ),
+            admin_audit=AdminAuditService(uow_factory),
             user_sync=SqlAlchemyTelegramUserSyncPort(UserApplicationService(uow_factory)),
             events=event_read_model,
             registrations=SqlAlchemyRegistrationCommandPort(
