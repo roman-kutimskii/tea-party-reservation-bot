@@ -24,7 +24,11 @@ from tea_party_reservation_bot.infrastructure.telegram.publication import (
     TelegramPublicationRenderer,
 )
 from tea_party_reservation_bot.logging import get_logger
-from tea_party_reservation_bot.metrics import build_app_metrics, maybe_start_metrics_http_server
+from tea_party_reservation_bot.metrics import (
+    RuntimeStatus,
+    build_app_metrics,
+    maybe_start_metrics_http_server,
+)
 
 
 @dataclass(slots=True)
@@ -47,6 +51,7 @@ class WorkerRuntime:
 
         session_factory = create_session_factory(self.settings.database)
         metrics = build_app_metrics(self.settings.metrics)
+        runtime_status = RuntimeStatus(runtime="worker")
         auth = DomainAuthorizationService(metrics=metrics)
         clock = SystemClock()
 
@@ -64,12 +69,14 @@ class WorkerRuntime:
             host=self.settings.metrics.host,
             port=self.settings.metrics.worker_port,
             runtime="worker",
+            runtime_status=runtime_status,
         )
         bot = Bot(
             token=token,
             default=DefaultBotProperties(parse_mode=ParseMode.HTML),
         )
         me = await bot.get_me()
+        runtime_status.mark_ready()
         processor = OutboxProcessor(
             session_factory=session_factory,
             publication_service=publication_service,
@@ -98,6 +105,7 @@ class WorkerRuntime:
                 logger.info("worker.outbox.tick", processed=processed)
                 await asyncio.sleep(self.settings.worker.outbox_poll_interval_seconds)
         finally:
+            runtime_status.mark_not_ready(reason="stopped")
             if self.scheduler.running:
                 self.scheduler.shutdown(wait=False)
             bind = session_factory.kw.get("bind")

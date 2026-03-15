@@ -63,6 +63,12 @@ Application settings use nested env vars with the `TEA_PARTY_` prefix, for examp
 - `TEA_PARTY_TELEGRAM__GROUP_CHAT_ID`
 - `TEA_PARTY_WORKER__OUTBOX_POLL_INTERVAL_SECONDS`
 
+When metrics are enabled, the bot and worker metrics listeners also expose lightweight operational probes on the same port:
+
+- `/metrics` for Prometheus scraping
+- `/healthz` for process liveness
+- `/readyz` for startup readiness
+
 ## CI/CD contract
 
 The GitHub Actions workflows expect:

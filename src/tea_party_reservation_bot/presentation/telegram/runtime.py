@@ -42,7 +42,11 @@ from tea_party_reservation_bot.infrastructure.telegram.publication import (
     TelegramPublicationRenderer,
 )
 from tea_party_reservation_bot.logging import get_logger
-from tea_party_reservation_bot.metrics import build_app_metrics, maybe_start_metrics_http_server
+from tea_party_reservation_bot.metrics import (
+    RuntimeStatus,
+    build_app_metrics,
+    maybe_start_metrics_http_server,
+)
 from tea_party_reservation_bot.presentation.telegram.handlers import (
     TelegramHandlerDependencies,
     build_router,
@@ -70,6 +74,7 @@ class BotRuntime:
         dispatcher = Dispatcher(storage=storage)
         session_factory = create_session_factory(self.settings.database)
         metrics = build_app_metrics(self.settings.metrics)
+        runtime_status = RuntimeStatus(runtime="bot")
         authorization_service = DomainAuthorizationService(metrics=metrics)
         clock = SystemClock()
 
@@ -137,8 +142,10 @@ class BotRuntime:
             host=self.settings.metrics.host,
             port=self.settings.metrics.bot_port,
             runtime="bot",
+            runtime_status=runtime_status,
         )
         me = await bot.get_me()
+        runtime_status.mark_ready()
         dispatcher.include_router(
             build_router(
                 TelegramHandlerDependencies(
@@ -157,6 +164,7 @@ class BotRuntime:
         try:
             await dispatcher.start_polling(bot)
         finally:
+            runtime_status.mark_not_ready(reason="stopped")
             bind = session_factory.kw.get("bind")
             if bind is not None:
                 await bind.dispose()

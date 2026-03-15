@@ -36,5 +36,6 @@ docker compose -f deploy/compose/compose.yml -f deploy/compose/compose.local.yml
 - `deploy/compose/compose.yml` now fails fast if `APP_IMAGE` or `POSTGRES_PASSWORD` is missing
 - Ansible inventory must provide vault-backed secret variables instead of plaintext placeholders
 - GitHub Actions deploys are serialized per environment to avoid overlapping releases
+- when metrics are enabled, each runtime also exposes `/healthz` and `/readyz` on its metrics port
 
 See `docs/deployment.md` and `ops/runbooks/deploy.md` for the operational flow.
