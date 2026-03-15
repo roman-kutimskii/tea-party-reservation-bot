@@ -48,6 +48,15 @@ class WorkerSettings(BaseModel):
     scheduled_reconciliation_enabled: bool = True
 
 
+class MetricsSettings(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    enabled: bool = False
+    host: str = "127.0.0.1"
+    bot_port: int = Field(default=9101, ge=1, le=65535)
+    worker_port: int = Field(default=9102, ge=1, le=65535)
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="TEA_PARTY_",
@@ -60,6 +69,7 @@ class Settings(BaseSettings):
     telegram: TelegramSettings = TelegramSettings()
     database: DatabaseSettings = DatabaseSettings()
     worker: WorkerSettings = WorkerSettings()
+    metrics: MetricsSettings = MetricsSettings()
 
 
 @lru_cache(maxsize=1)

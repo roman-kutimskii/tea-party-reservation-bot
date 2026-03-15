@@ -32,6 +32,7 @@ from tea_party_reservation_bot.domain.events import EventDraft, EventPreview
 from tea_party_reservation_bot.domain.parsing import AdminEventInputParser
 from tea_party_reservation_bot.domain.rbac import Actor
 from tea_party_reservation_bot.exceptions import ApplicationError, ConflictError, NotFoundError
+from tea_party_reservation_bot.metrics import NO_OP_METRICS, AppMetrics
 from tea_party_reservation_bot.time import load_timezone, now_utc
 
 
@@ -272,6 +273,7 @@ class PublicationService:
     uow_factory: Callable[[], UnitOfWork]
     authorization_service: AuthorizationService
     clock: Clock
+    metrics: AppMetrics = NO_OP_METRICS
 
     async def publish_single_draft(
         self,
@@ -320,6 +322,7 @@ class PublicationService:
             source="publish_single_draft",
             idempotency_key=idempotency_key,
             operation=operation,
+            metrics=self.metrics,
         )
 
     async def publish_batch_drafts(
@@ -372,6 +375,7 @@ class PublicationService:
             source="publish_batch_drafts",
             idempotency_key=idempotency_key,
             operation=operation,
+            metrics=self.metrics,
         )
 
     async def request_single_event_publication(
@@ -409,6 +413,7 @@ class PublicationService:
             source="publish_single_event",
             idempotency_key=idempotency_key,
             operation=operation,
+            metrics=self.metrics,
         )
 
     async def request_batch_publication(
@@ -449,6 +454,7 @@ class PublicationService:
             source="publish_event_batch",
             idempotency_key=idempotency_key,
             operation=operation,
+            metrics=self.metrics,
         )
 
     async def mark_publication_succeeded(
@@ -503,6 +509,7 @@ class PublicationService:
                 batch_id=batch_id, status=PublicationBatchStatus.FAILED
             )
             await uow.events.mark_publication_failed(event_ids=stored_event_ids)
+            self.metrics.record_publication_failure()
             return PublicationStateChangeResult(
                 batch_id=batch_id,
                 event_ids=stored_event_ids,
@@ -538,6 +545,7 @@ class AdminEventService:
     uow_factory: Callable[[], UnitOfWork]
     authorization_service: AuthorizationService
     clock: Clock
+    metrics: AppMetrics = NO_OP_METRICS
 
     async def update_event_fields(  # noqa: PLR0913
         self,
@@ -635,6 +643,7 @@ class AdminEventService:
                 uow,
                 event=event,
                 now=self.clock.now(),
+                metrics=self.metrics,
             )
             telegram_user_ids = await uow.events.list_active_participant_telegram_user_ids(event.id)
             await _enqueue_bulk_notifications(
@@ -696,6 +705,7 @@ class AdminEventService:
                     if reservation is not None:
                         reservation.status = ReservationStatus.CANCELLED
                         reservation.cancelled_at = now
+                        self.metrics.record_cancellation(target="reservation")
                 else:
                     waitlist_entry = await uow.registrations.get_active_waitlist_entry(
                         event_id=event.id,
@@ -704,6 +714,7 @@ class AdminEventService:
                     if waitlist_entry is not None:
                         waitlist_entry.status = WaitlistStatus.CANCELLED
                         waitlist_entry.cancelled_at = now
+                        self.metrics.record_cancellation(target="waitlist")
             event.reserved_seats = 0
             event.cancel()
             await _enqueue_bulk_notifications(
@@ -756,6 +767,7 @@ class AdminEventService:
                 )
                 event.reserved_seats += 1
                 event.sync_status_from_capacity()
+                self.metrics.record_registration()
                 await _enqueue_user_notification(
                     uow,
                     event_id=event.id,
@@ -768,6 +780,7 @@ class AdminEventService:
                 message = f"Участник {user.telegram_user_id} добавлен в подтвержденные."
             else:
                 await uow.registrations.create_waitlist_entry(event_id=event.id, user_id=user.id)
+                self.metrics.record_waitlist_join()
                 await _enqueue_user_notification(
                     uow,
                     event_id=event.id,
@@ -813,6 +826,7 @@ class AdminEventService:
                 reservation.cancelled_at = now
                 event.reserved_seats -= 1
                 event.sync_status_from_capacity()
+                self.metrics.record_cancellation(target="reservation")
                 await _enqueue_user_notification(
                     uow,
                     event_id=event.id,
@@ -825,12 +839,14 @@ class AdminEventService:
                     uow,
                     event=event,
                     now=now,
+                    metrics=self.metrics,
                 )
                 action = "participant_removed_confirmed"
             else:
                 waitlist_entry.status = WaitlistStatus.CANCELLED
                 waitlist_entry.cancelled_at = now
                 await _resequence_waitlist_positions(uow, event.id)
+                self.metrics.record_cancellation(target="waitlist")
                 await _enqueue_user_notification(
                     uow,
                     event_id=event.id,
@@ -898,6 +914,7 @@ class AdminEventService:
                 event.reserved_seats += 1
                 event.sync_status_from_capacity()
                 await _resequence_waitlist_positions(uow, event.id)
+                self.metrics.record_promotion()
                 await _enqueue_user_notification(
                     uow,
                     event_id=event.id,
@@ -916,6 +933,8 @@ class AdminEventService:
                 event.reserved_seats -= 1
                 await uow.registrations.create_waitlist_entry(event_id=event.id, user_id=user.id)
                 event.sync_status_from_capacity()
+                self.metrics.record_cancellation(target="reservation")
+                self.metrics.record_waitlist_join()
                 await _enqueue_user_notification(
                     uow,
                     event_id=event.id,
@@ -929,6 +948,7 @@ class AdminEventService:
                     event=event,
                     now=now,
                     exclude_user_ids=(user.id,),
+                    metrics=self.metrics,
                 )
 
             await uow.audit_log.append(
@@ -964,7 +984,12 @@ class AdminEventService:
                 if event.status != EventStatus.REGISTRATION_CLOSED:
                     raise ConflictError("Регистрация уже открыта.")
                 event.reopen_registration()
-                await _promote_waitlist_until_capacity(uow, event=event, now=now)
+                await _promote_waitlist_until_capacity(
+                    uow,
+                    event=event,
+                    now=now,
+                    metrics=self.metrics,
+                )
                 event.sync_status_from_capacity()
                 action = "event_registration_reopened"
                 message = f"Регистрация на событие #{event.id} открыта."
@@ -1009,6 +1034,7 @@ class RegistrationService:
     uow_factory: Callable[[], UnitOfWork]
     clock: Clock
     authorization_service: AuthorizationService | None = None
+    metrics: AppMetrics = NO_OP_METRICS
 
     async def register(
         self,
@@ -1056,6 +1082,7 @@ class RegistrationService:
                     message="Вы записаны.",
                 )
                 outbox_event_type = "reservation.confirmed"
+                self.metrics.record_registration()
             else:
                 waitlist_entry = await uow.registrations.create_waitlist_entry(
                     event_id=event.id,
@@ -1071,6 +1098,7 @@ class RegistrationService:
                     message="Вы в листе ожидания.",
                 )
                 outbox_event_type = "waitlist.joined"
+                self.metrics.record_waitlist_join()
 
             await uow.outbox.enqueue(
                 OutboxMessage(
@@ -1093,9 +1121,10 @@ class RegistrationService:
             source="register",
             idempotency_key=idempotency_key,
             operation=operation,
+            metrics=self.metrics,
         )
 
-    async def cancel(
+    async def cancel(  # noqa: PLR0915
         self,
         *,
         telegram_user_id: int,
@@ -1174,9 +1203,11 @@ class RegistrationService:
                             available_at=now,
                         )
                     )
+                    self.metrics.record_promotion()
 
                 outbox_event_type = "reservation.cancelled"
                 message = "Запись отменена."
+                self.metrics.record_cancellation(target="reservation")
             else:
                 assert waitlist_entry is not None
                 waitlist_entry.status = WaitlistStatus.CANCELLED
@@ -1184,6 +1215,7 @@ class RegistrationService:
                 await _resequence_waitlist_positions(uow, event.id)
                 outbox_event_type = "waitlist.cancelled"
                 message = "Вы вышли из листа ожидания."
+                self.metrics.record_cancellation(target="waitlist")
 
             await uow.outbox.enqueue(
                 OutboxMessage(
@@ -1213,6 +1245,7 @@ class RegistrationService:
             source="cancel",
             idempotency_key=idempotency_key,
             operation=operation,
+            metrics=self.metrics,
         )
 
 
@@ -1304,6 +1337,7 @@ async def _promote_waitlist_until_capacity(
     event: Any,
     now: datetime,
     exclude_user_ids: Sequence[int] = (),
+    metrics: AppMetrics = NO_OP_METRICS,
 ) -> list[int]:
     promoted_user_ids: list[int] = []
     while event.reserved_seats < event.capacity:
@@ -1324,6 +1358,7 @@ async def _promote_waitlist_until_capacity(
         event.reserved_seats += 1
         event.sync_status_from_capacity()
         promoted_user_ids.append(next_waitlist_entry.user_id)
+        metrics.record_promotion()
         promoted_user = await uow.users.get_by_id(next_waitlist_entry.user_id)
         if promoted_user is not None:
             await _enqueue_user_notification(
@@ -1441,6 +1476,7 @@ async def _run_idempotent[ResultT: IdempotentResult](
     source: str,
     idempotency_key: str,
     operation: Callable[[UnitOfWork], Awaitable[ResultT]],
+    metrics: AppMetrics = NO_OP_METRICS,
 ) -> ResultT:
     async with uow_factory() as uow:
         processed = await uow.idempotency.get(source=source, idempotency_key=idempotency_key)
@@ -1448,6 +1484,7 @@ async def _run_idempotent[ResultT: IdempotentResult](
             payload = uow.idempotency.load_result(processed.result_ref)
             if payload is None:
                 raise ApplicationError("Идемпотентный результат поврежден.")
+            metrics.record_duplicate_suppression(source=source)
             return cast(ResultT, _hydrate_result(payload))
 
     try:
@@ -1467,6 +1504,7 @@ async def _run_idempotent[ResultT: IdempotentResult](
             payload = uow.idempotency.load_result(processed.result_ref)
             if payload is None:
                 raise ApplicationError("Идемпотентный результат поврежден.") from err
+            metrics.record_duplicate_suppression(source=source)
             return cast(ResultT, _hydrate_result(payload))
 
 

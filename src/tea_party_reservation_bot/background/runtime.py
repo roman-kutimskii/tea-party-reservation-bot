@@ -24,6 +24,7 @@ from tea_party_reservation_bot.infrastructure.telegram.publication import (
     TelegramPublicationRenderer,
 )
 from tea_party_reservation_bot.logging import get_logger
+from tea_party_reservation_bot.metrics import build_app_metrics, maybe_start_metrics_http_server
 
 
 @dataclass(slots=True)
@@ -45,7 +46,8 @@ class WorkerRuntime:
             raise RuntimeError(msg)
 
         session_factory = create_session_factory(self.settings.database)
-        auth = DomainAuthorizationService()
+        metrics = build_app_metrics(self.settings.metrics)
+        auth = DomainAuthorizationService(metrics=metrics)
         clock = SystemClock()
 
         def uow_factory() -> UnitOfWork:
@@ -55,6 +57,13 @@ class WorkerRuntime:
             uow_factory=uow_factory,
             authorization_service=auth,
             clock=clock,
+            metrics=metrics,
+        )
+        maybe_start_metrics_http_server(
+            metrics,
+            host=self.settings.metrics.host,
+            port=self.settings.metrics.worker_port,
+            runtime="worker",
         )
         bot = Bot(
             token=token,

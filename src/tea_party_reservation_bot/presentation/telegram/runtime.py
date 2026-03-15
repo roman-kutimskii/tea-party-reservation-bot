@@ -42,6 +42,7 @@ from tea_party_reservation_bot.infrastructure.telegram.publication import (
     TelegramPublicationRenderer,
 )
 from tea_party_reservation_bot.logging import get_logger
+from tea_party_reservation_bot.metrics import build_app_metrics, maybe_start_metrics_http_server
 from tea_party_reservation_bot.presentation.telegram.handlers import (
     TelegramHandlerDependencies,
     build_router,
@@ -68,7 +69,8 @@ class BotRuntime:
         storage = MemoryStorage()
         dispatcher = Dispatcher(storage=storage)
         session_factory = create_session_factory(self.settings.database)
-        authorization_service = DomainAuthorizationService()
+        metrics = build_app_metrics(self.settings.metrics)
+        authorization_service = DomainAuthorizationService(metrics=metrics)
         clock = SystemClock()
 
         def uow_factory() -> UnitOfWork:
@@ -92,7 +94,12 @@ class BotRuntime:
             user_sync=SqlAlchemyTelegramUserSyncPort(UserApplicationService(uow_factory)),
             events=event_read_model,
             registrations=SqlAlchemyRegistrationCommandPort(
-                registration_service=RegistrationService(uow_factory, clock, authorization_service),
+                registration_service=RegistrationService(
+                    uow_factory,
+                    clock,
+                    authorization_service,
+                    metrics,
+                ),
                 query_service=event_query_service,
                 events=event_read_model,
             ),
@@ -100,12 +107,22 @@ class BotRuntime:
                 NotificationPreferenceService(uow_factory)
             ),
             publication=SqlAlchemyPublicationWorkflowPort(
-                publication_service=PublicationService(uow_factory, authorization_service, clock),
+                publication_service=PublicationService(
+                    uow_factory,
+                    authorization_service,
+                    clock,
+                    metrics,
+                ),
                 timezone_name=self.settings.app.timezone_name,
             ),
             admin_commands=SqlAlchemyAdminEventCommandPort(
-                service=AdminEventService(uow_factory, authorization_service, clock),
-                registration_service=RegistrationService(uow_factory, clock, authorization_service),
+                service=AdminEventService(uow_factory, authorization_service, clock, metrics),
+                registration_service=RegistrationService(
+                    uow_factory,
+                    clock,
+                    authorization_service,
+                    metrics,
+                ),
                 timezone=self.settings.app.timezone,
             ),
             admin_role_management=SqlAlchemyAdminRoleManagementPort(
@@ -114,6 +131,12 @@ class BotRuntime:
             system_settings_management=SqlAlchemySystemSettingsManagementPort(
                 system_settings_service
             ),
+        )
+        maybe_start_metrics_http_server(
+            metrics,
+            host=self.settings.metrics.host,
+            port=self.settings.metrics.bot_port,
+            runtime="bot",
         )
         me = await bot.get_me()
         dispatcher.include_router(
