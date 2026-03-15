@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from typing import cast
 
 from aiogram import F, Router
 from aiogram.filters import Command, CommandObject, CommandStart
@@ -51,6 +52,8 @@ from tea_party_reservation_bot.presentation.telegram.states import AdminDraftSta
 
 LoadActor = Callable[[User], Awaitable[Actor]]
 
+_INVALID_CALLBACK_TEXT = "Некорректное действие. Попробуйте снова."
+
 
 @dataclass(slots=True, frozen=True)
 class TelegramHandlerDependencies:
@@ -99,6 +102,13 @@ def _render_preview(deps: TelegramHandlerDependencies, previews: list[EventPrevi
             event_ids=[f"preview-{index}" for index, _ in enumerate(previews, start=1)],
         )
     return render_admin_preview(previews, payload)
+
+
+def _extract_callback_suffix(data: str | None, prefix: str) -> str | None:
+    if data is None or not data.startswith(prefix):
+        return None
+    suffix = data.removeprefix(prefix)
+    return suffix or None
 
 
 def _register_public_menu_handlers(
@@ -197,8 +207,9 @@ def _register_public_callback_handlers(router: Router, deps: TelegramHandlerDepe
     async def toggle_notifications(callback: CallbackQuery) -> None:
         user = callback.from_user
         settings = await deps.application_service.toggle_notifications(telegram_user_id=user.id)
-        if callback.message is not None:
-            await callback.message.edit_text(
+        if isinstance(callback.message, Message):
+            message = cast(Message, callback.message)
+            await message.edit_text(
                 render_notifications(settings),
                 reply_markup=notifications_keyboard(settings.enabled),
             )
@@ -206,14 +217,18 @@ def _register_public_callback_handlers(router: Router, deps: TelegramHandlerDepe
 
     @router.callback_query(F.data.startswith("event:detail:"))
     async def event_details(callback: CallbackQuery) -> None:
-        event_id = (callback.data or "").split(":", maxsplit=2)[2]
+        event_id = _extract_callback_suffix(callback.data, "event:detail:")
+        if event_id is None:
+            await callback.answer(_INVALID_CALLBACK_TEXT, show_alert=True)
+            return
         event = await deps.application_service.get_event(event_id)
-        if callback.message is not None:
+        if isinstance(callback.message, Message):
+            message = cast(Message, callback.message)
             if event is None:
                 await callback.answer("Событие не найдено или уже недоступно.", show_alert=True)
                 return
             else:
-                await callback.message.edit_text(
+                await message.edit_text(
                     render_event_details(event),
                     reply_markup=event_actions_keyboard(event),
                 )
@@ -227,7 +242,10 @@ def _register_registration_handlers(
 ) -> None:
     @router.callback_query(F.data.startswith("event:register:"))
     async def register_for_event(callback: CallbackQuery) -> None:
-        event_id = (callback.data or "").split(":", maxsplit=2)[2]
+        event_id = _extract_callback_suffix(callback.data, "event:register:")
+        if event_id is None:
+            await callback.answer(_INVALID_CALLBACK_TEXT, show_alert=True)
+            return
         try:
             result = await deps.application_service.register_for_event(
                 telegram_user_id=callback.from_user.id,
@@ -249,16 +267,23 @@ def _register_registration_handlers(
 
     @router.callback_query(F.data.startswith("my:cancel_prompt:"))
     async def prompt_cancel_registration(callback: CallbackQuery) -> None:
-        registration_id = (callback.data or "").split(":", maxsplit=2)[2]
-        if callback.message is not None:
-            await callback.message.edit_reply_markup(
+        registration_id = _extract_callback_suffix(callback.data, "my:cancel_prompt:")
+        if registration_id is None:
+            await callback.answer(_INVALID_CALLBACK_TEXT, show_alert=True)
+            return
+        if isinstance(callback.message, Message):
+            message = cast(Message, callback.message)
+            await message.edit_reply_markup(
                 reply_markup=cancellation_confirm_keyboard(registration_id)
             )
         await callback.answer()
 
     @router.callback_query(F.data.startswith("my:cancel_yes:"))
     async def confirm_cancel_registration(callback: CallbackQuery) -> None:
-        registration_id = (callback.data or "").split(":", maxsplit=2)[2]
+        registration_id = _extract_callback_suffix(callback.data, "my:cancel_yes:")
+        if registration_id is None:
+            await callback.answer(_INVALID_CALLBACK_TEXT, show_alert=True)
+            return
         cancelled = await deps.application_service.cancel_registration(
             telegram_user_id=callback.from_user.id,
             registration_id=registration_id,
@@ -398,19 +423,25 @@ def _register_admin_draft_handlers(
             await callback.answer("Черновик потерян", show_alert=True)
             return
         actor = await load_actor(user)
-        receipt = (
-            await deps.application_service.publish_batch_events(
-                actor=actor,
-                raw_text=raw_text,
-                idempotency_key=f"callback:{callback.id}:draft:batch",
+        try:
+            receipt = (
+                await deps.application_service.publish_batch_events(
+                    actor=actor,
+                    raw_text=raw_text,
+                    idempotency_key=f"callback:{callback.id}:draft:batch",
+                )
+                if mode == "batch"
+                else await deps.application_service.publish_single_event(
+                    actor=actor,
+                    raw_text=raw_text,
+                    idempotency_key=f"callback:{callback.id}:draft:single",
+                )
             )
-            if mode == "batch"
-            else await deps.application_service.publish_single_event(
-                actor=actor,
-                raw_text=raw_text,
-                idempotency_key=f"callback:{callback.id}:draft:single",
-            )
-        )
+        except (AuthorizationError, ValidationError) as exc:
+            if callback.message is not None:
+                await callback.message.answer(str(exc))
+            await callback.answer("Ошибка", show_alert=True)
+            return
         await state.clear()
         if callback.message is not None:
             await callback.message.answer(receipt.message)
@@ -442,7 +473,10 @@ def _register_admin_event_handlers(
 
     @router.callback_query(F.data.startswith("admin:roster:"))
     async def admin_roster(callback: CallbackQuery) -> None:
-        event_id = (callback.data or "").split(":", maxsplit=2)[2]
+        event_id = _extract_callback_suffix(callback.data, "admin:roster:")
+        if event_id is None:
+            await callback.answer(_INVALID_CALLBACK_TEXT, show_alert=True)
+            return
         actor = await load_actor(callback.from_user)
         try:
             roster = await deps.application_service.get_event_roster(actor=actor, event_id=event_id)

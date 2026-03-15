@@ -56,3 +56,30 @@ def test_batch_publication_renders_distinct_buttons() -> None:
         payload.reply_markup.inline_keyboard[0][0].url
         != payload.reply_markup.inline_keyboard[1][0].url
     )
+
+
+def test_single_publication_truncates_long_button_label() -> None:
+    renderer = TelegramPublicationRenderer()
+    preview = EventPreview(
+        normalized=EventDraft(
+            tea_name="Очень длинное название чая " * 6,
+            description="Первый вечер",
+            starts_at_local=datetime(2099, 3, 21, 19, 0, tzinfo=load_timezone("Europe/Moscow")),
+            starts_at_utc=datetime(2099, 3, 21, 16, 0, tzinfo=load_timezone("UTC")),
+            capacity=12,
+            cancel_deadline_source=CancelDeadlineSource.DEFAULT,
+            cancel_deadline_at_local=datetime(
+                2099, 3, 21, 15, 0, tzinfo=load_timezone("Europe/Moscow")
+            ),
+            cancel_deadline_at_utc=datetime(2099, 3, 21, 12, 0, tzinfo=load_timezone("UTC")),
+        ),
+        block_number=1,
+    )
+
+    payload = renderer.render_single_event_post(
+        bot_username="tea_party_bot",
+        preview=preview,
+        event_id="event-1",
+    )
+
+    assert len(payload.reply_markup.inline_keyboard[0][0].text) <= 64

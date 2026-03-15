@@ -15,6 +15,17 @@ from tea_party_reservation_bot.domain.events import EventPreview
 from tea_party_reservation_bot.infrastructure.telegram.publication import TelegramGroupPostPayload
 
 
+def _status_label(status: str) -> str:
+    return {
+        "published_open": "Регистрация открыта",
+        "published_full": "Мест нет",
+        "registration_closed": "Регистрация закрыта",
+        "draft": "Черновик",
+        "cancelled": "Отменено",
+        "completed": "Завершено",
+    }.get(status, escape(status))
+
+
 def render_welcome() -> str:
     return "Здравствуйте. Выберите действие ниже."
 
@@ -44,7 +55,7 @@ def render_event_card(event: PublicEventView) -> str:
 
 
 def render_event_details(event: PublicEventView) -> str:
-    lines = [render_event_card(event), f"Статус: {event.status}"]
+    lines = [render_event_card(event), f"Статус: {_status_label(event.status)}"]
     return "\n".join(lines)
 
 
@@ -122,7 +133,7 @@ def render_admin_preview(
                 ]
             )
         )
-    parts.append(f"Пост в группу:\n{publication_preview.text}")
+    parts.append(f"Пост в группу:\n{escape(publication_preview.text)}")
     return "\n\n".join(parts)
 
 
@@ -133,6 +144,10 @@ def render_admin_events(events: Sequence[AdminEventView]) -> str:
 
 
 def render_roster(roster: EventRosterView) -> str:
-    confirmed = ", ".join(escape(item.display_name) for item in roster.participants) or "нет"
-    waitlist = ", ".join(escape(item.display_name) for item in roster.waitlist) or "нет"
-    return f"{escape(roster.event.tea_name)}\nПодтверждены: {confirmed}\nЛист ожидания: {waitlist}"
+    confirmed = (
+        "\n".join(f"- {escape(item.display_name)}" for item in roster.participants) or "- нет"
+    )
+    waitlist = "\n".join(f"- {escape(item.display_name)}" for item in roster.waitlist) or "- нет"
+    return (
+        f"{escape(roster.event.tea_name)}\nПодтверждены:\n{confirmed}\nЛист ожидания:\n{waitlist}"
+    )

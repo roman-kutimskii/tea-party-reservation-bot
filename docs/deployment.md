@@ -27,10 +27,19 @@ docker compose -f deploy/compose/compose.yml -f deploy/compose/compose.local.yml
 Example stage startup on host:
 
 ```bash
-cp deploy/compose/env/stage.env.example deploy/compose/env/stage.env
-cp deploy/compose/env/stage.secrets.env.example deploy/compose/env/stage.secrets.env
+cp deploy/compose/env/stage.env.example /opt/tea-party-reservation-bot/env/stage.env
+cp deploy/compose/env/stage.secrets.env.example /opt/tea-party-reservation-bot/env/stage.secrets.env
+cp deploy/compose/compose.yml /opt/tea-party-reservation-bot/compose/compose.yml
+cp deploy/compose/compose.stage.yml /opt/tea-party-reservation-bot/compose/compose.stage.yml
+cd /opt/tea-party-reservation-bot/compose
+export APP_IMAGE=ghcr.io/your-org/tea-party-reservation-bot@sha256:replace-me
 docker compose -f compose.yml -f compose.stage.yml up -d
 ```
+
+Stage and prod now fail fast if these values are missing:
+
+- `APP_IMAGE`
+- `POSTGRES_PASSWORD`
 
 ## Required application hooks
 
@@ -61,13 +70,17 @@ The GitHub Actions workflows expect:
 - `pyproject.toml` managed with `uv`
 - Ruff, mypy, and pytest configured in the project
 - Docker build succeeds from repository root
+- unit and integration suites are runnable separately via `tests/unit` and `tests/integration`
 - stage/prod SSH secrets and deployment paths configured in GitHub environments
+- deployment env files already exist on the target host before CD runs
 
 ## Secrets handling
 
 - keep `deploy/compose/env/*.env` on the server, not in git
 - keep Terraform provider tokens in shell environment or secret manager
 - use GitHub environment secrets for GHCR, SSH keys, and deployment hosts
+- keep Ansible secrets in vault-backed variables such as `vault_restic_password`
+- do not leave `ufw_allowed_ssh_cidrs` open to `0.0.0.0/0` outside temporary break-glass access
 
 ## Backup expectations
 

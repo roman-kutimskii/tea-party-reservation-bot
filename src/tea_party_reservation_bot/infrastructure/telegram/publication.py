@@ -11,6 +11,22 @@ from tea_party_reservation_bot.application.telegram import PublicEventView
 from tea_party_reservation_bot.domain.events import EventPreview
 from tea_party_reservation_bot.infrastructure.telegram.deep_links import build_event_deep_link
 
+_TELEGRAM_MESSAGE_LIMIT = 4096
+_TELEGRAM_BUTTON_TEXT_LIMIT = 64
+
+
+def _truncate_button_text(text: str) -> str:
+    if len(text) <= _TELEGRAM_BUTTON_TEXT_LIMIT:
+        return text
+    return f"{text[: _TELEGRAM_BUTTON_TEXT_LIMIT - 3].rstrip()}..."
+
+
+def _ensure_message_length(text: str) -> str:
+    if len(text) <= _TELEGRAM_MESSAGE_LIMIT:
+        return text
+    msg = "Telegram post exceeds the message length limit."
+    raise ValueError(msg)
+
 
 @dataclass(slots=True, frozen=True)
 class TelegramGroupPostPayload:
@@ -28,11 +44,12 @@ class TelegramPublicationRenderer:
     ) -> TelegramGroupPostPayload:
         text = self._render_preview_block(preview, prefix=None)
         button = InlineKeyboardButton(
-            text=f"Открыть: {preview.normalized.tea_name}",
+            text=_truncate_button_text(f"Открыть: {preview.normalized.tea_name}"),
             url=build_event_deep_link(bot_username=bot_username, event_id=event_id),
         )
         return TelegramGroupPostPayload(
-            text=text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[button]])
+            text=_ensure_message_length(text),
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[button]]),
         )
 
     def render_batch_post(
@@ -49,7 +66,7 @@ class TelegramPublicationRenderer:
         buttons = [
             [
                 InlineKeyboardButton(
-                    text=f"{index}. {preview.normalized.tea_name}",
+                    text=_truncate_button_text(f"{index}. {preview.normalized.tea_name}"),
                     url=build_event_deep_link(bot_username=bot_username, event_id=event_id),
                 )
             ]
@@ -58,7 +75,7 @@ class TelegramPublicationRenderer:
             )
         ]
         return TelegramGroupPostPayload(
-            text="\n\n".join(blocks),
+            text=_ensure_message_length("\n\n".join(blocks)),
             reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
         )
 
@@ -68,14 +85,15 @@ class TelegramPublicationRenderer:
         bot_username: str,
         event: PublicEventView,
     ) -> TelegramGroupPostPayload:
-        button_label = f"Записаться: {event.tea_name}"
+        button_label = _truncate_button_text(f"Записаться: {event.tea_name}")
         button = InlineKeyboardButton(
             text=button_label,
             url=build_event_deep_link(bot_username=bot_username, event_id=event.event_id),
         )
         text = self._render_event_block(event)
         return TelegramGroupPostPayload(
-            text=text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[button]])
+            text=_ensure_message_length(text),
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[button]]),
         )
 
     def render_published_batch_post(
@@ -91,14 +109,14 @@ class TelegramPublicationRenderer:
         buttons = [
             [
                 InlineKeyboardButton(
-                    text=f"{index}. {event.tea_name}",
+                    text=_truncate_button_text(f"{index}. {event.tea_name}"),
                     url=build_event_deep_link(bot_username=bot_username, event_id=event.event_id),
                 )
             ]
             for index, event in enumerate(events, start=1)
         ]
         return TelegramGroupPostPayload(
-            text="\n\n".join(blocks),
+            text=_ensure_message_length("\n\n".join(blocks)),
             reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
         )
 

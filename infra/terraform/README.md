@@ -23,4 +23,10 @@ Required secrets are passed through environment variables, not committed to git:
 
 - `HCLOUD_TOKEN`
 
+Operational reminders:
+
+- restrict SSH ingress to the team CIDR before apply; do not leave it open to the world
+- treat Terraform as infrastructure provisioning only; keep application secrets in server env files or Ansible vault values
+- verify the deployment path matches the Compose and runbook expectations before handing the host to CD
+
 Outputs include the server IPv4 address and deployment mount path.
