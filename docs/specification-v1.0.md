@@ -216,7 +216,7 @@ Notes:
 - Weekly batch group post format:
   - one combined text post;
   - clearly separated event blocks;
-  - one distinct registration button per event.
+  - one distinct registration deep link per event.
 - Each button must open the bot for the exact event it belongs to.
 - Group publication is announcement-only; registration itself happens in the bot private chat, not inside the group thread.
 - Publication requires explicit admin confirmation.
@@ -458,9 +458,9 @@ Telegram group capability assumptions:
 
 - The bot must be added to the target Telegram group.
 - The bot must have sufficient rights to publish announcement messages in that group.
-- The bot must be able to attach inline buttons or deep links to published group posts.
+- The bot must be able to attach deep links to published group posts.
 - The design must not rely on users interacting with the bot inside the group chat itself.
-- Users are expected to open the bot from post buttons or deep links and complete registration in private chat with the bot.
+- Users are expected to open the bot from post deep links and complete registration in private chat with the bot.
 - Group messages are announcement entry points, not the source of truth for registrations.
 
 ### 6.3 PostgreSQL Usage and Rationale
@@ -591,7 +591,7 @@ Batch publication:
 2. Create `publication_batch` and link included events in one transaction.
 3. Save outbox publish event.
 4. Worker sends one combined group post with clearly separated event blocks.
-5. Worker attaches one distinct registration button per event.
+5. Worker attaches one distinct registration deep link per event.
 6. On success, all included events become `published_open`.
 7. On failure, none of the included events become published.
 
@@ -987,7 +987,7 @@ Containers:
 - Waitlist is enabled by default for all MVP events.
 - New-event notifications are global on/off only.
 - Group post uses one combined text post for weekly batch publication.
-- Weekly batch post contains clearly separated event blocks and one distinct button per event.
+- Weekly batch post contains clearly separated event blocks and one distinct deep link per event.
 - Cancellation deadline uses system default in MVP with optional per-event override.
 - Registration remains event-specific even in batch posts.
 
