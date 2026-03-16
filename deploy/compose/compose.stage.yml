@@ -5,7 +5,7 @@ services:
       - ./env/stage.env
       - ./env/stage.secrets.env
     ports:
-      - "127.0.0.1:${BOT_METRICS_PORT:-9101}:9101"
+      - "127.0.0.1:9111:9101"
     labels:
       com.tea-party.environment: stage
 
@@ -15,7 +15,7 @@ services:
       - ./env/stage.env
       - ./env/stage.secrets.env
     ports:
-      - "127.0.0.1:${WORKER_METRICS_PORT:-9102}:9102"
+      - "127.0.0.1:9112:9102"
     labels:
       com.tea-party.environment: stage
 
@@ -24,4 +24,4 @@ services:
       - ./env/stage.env
       - ./env/stage.secrets.env
     ports:
-      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+      - "127.0.0.1:5433:5432"

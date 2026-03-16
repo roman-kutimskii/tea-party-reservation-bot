@@ -40,19 +40,19 @@ jobs:
       - name: Copy deployment assets
         uses: appleboy/scp-action@v0.1.7
         with:
-          host: ${{ secrets.PROD_SSH_HOST }}
-          username: ${{ secrets.PROD_SSH_USER }}
-          key: ${{ secrets.PROD_SSH_KEY }}
+          host: ${{ secrets.APP_SSH_HOST }}
+          username: ${{ secrets.APP_SSH_USER }}
+          key: ${{ secrets.APP_SSH_KEY }}
           source: deploy/compose/*
           target: ${{ secrets.PROD_DEPLOY_PATH }}
           strip_components: 2
 
-      - name: Deploy on prod host
+      - name: Deploy on host
         uses: appleboy/ssh-action@v1.2.0
         with:
-          host: ${{ secrets.PROD_SSH_HOST }}
-          username: ${{ secrets.PROD_SSH_USER }}
-          key: ${{ secrets.PROD_SSH_KEY }}
+          host: ${{ secrets.APP_SSH_HOST }}
+          username: ${{ secrets.APP_SSH_USER }}
+          key: ${{ secrets.APP_SSH_KEY }}
           script: |
             set -eu
             export APP_IMAGE='${{ steps.image.outputs.ref }}'
@@ -66,9 +66,9 @@ jobs:
       - name: Prod smoke check
         uses: appleboy/ssh-action@v1.2.0
         with:
-          host: ${{ secrets.PROD_SSH_HOST }}
-          username: ${{ secrets.PROD_SSH_USER }}
-          key: ${{ secrets.PROD_SSH_KEY }}
+          host: ${{ secrets.APP_SSH_HOST }}
+          username: ${{ secrets.APP_SSH_USER }}
+          key: ${{ secrets.APP_SSH_KEY }}
           script: |
             set -eu
             cd '${{ secrets.PROD_DEPLOY_PATH }}'

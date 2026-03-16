@@ -1,5 +1,5 @@
 - name: Bootstrap tea party VPS
-  hosts: all
+  hosts: app
   become: true
   roles:
     - common

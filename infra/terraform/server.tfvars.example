@@ -1,4 +1,3 @@
-environment  = "prod"
 region_slug  = "openstack-msk1"
 server_size  = "c4-m8-d80-hp"
 

@@ -2,30 +2,47 @@ timezone: Europe/Moscow
 deploy_user: deploy
 deploy_group: deploy
 deploy_root: /opt/tea-party-reservation-bot
-compose_dir: "{{ deploy_root }}/compose"
-env_dir: "{{ deploy_root }}/env"
 backup_root: /srv/tea-party-reservation-bot/backups
+ufw_allowed_ssh_cidrs:
+  - 203.0.113.0/24
 monitoring_allowed_cidrs: []
 monitoring_runtime_host: 127.0.0.1
-monitoring_bot_metrics_port: 9101
-monitoring_worker_metrics_port: 9102
 monitoring_check_interval_minutes: 5
 monitoring_error_lookback_minutes: 10
 monitoring_error_burst_threshold: 5
 monitoring_uptime_ping_url: "{{ vault_monitoring_uptime_ping_url | default('', true) }}"
 monitoring_alert_webhook_url: "{{ vault_monitoring_alert_webhook_url | default('', true) }}"
 backup_healthcheck_url: "{{ vault_backup_healthcheck_url | default('', true) }}"
-ufw_allowed_ssh_cidrs:
-  - 203.0.113.0/24
-app_service_name: tea-party-compose.service
 restic_repository: s3:https://s3.example.invalid/tea-party
 restic_password: "{{ vault_restic_password }}"
 restic_environment:
   AWS_ACCESS_KEY_ID: "{{ vault_aws_access_key_id }}"
   AWS_SECRET_ACCESS_KEY: "{{ vault_aws_secret_access_key }}"
   AWS_DEFAULT_REGION: eu-central-1
-postgres_backup_db: tea_party_prod
-postgres_backup_user: tea_party_prod
-postgres_backup_password: "{{ vault_postgres_backup_password }}"
-postgres_backup_host: 127.0.0.1
-postgres_backup_port: 5432
+
+# Both stage and prod Compose stacks run on this single host.
+# Each entry drives deploy-dir creation, a systemd unit, a backup job,
+# and a monitoring probe.
+app_environments:
+  stage:
+    compose_dir: "{{ deploy_root }}/stage/compose"
+    env_dir: "{{ deploy_root }}/stage/env"
+    compose_override: compose.stage.yml
+    service_name: tea-party-stage.service
+    bot_metrics_port: 9111
+    worker_metrics_port: 9112
+    postgres_port: 5433
+    postgres_db: tea_party_stage
+    postgres_user: tea_party_stage
+    postgres_backup_password: "{{ vault_postgres_stage_backup_password }}"
+  prod:
+    compose_dir: "{{ deploy_root }}/prod/compose"
+    env_dir: "{{ deploy_root }}/prod/env"
+    compose_override: compose.prod.yml
+    service_name: tea-party-prod.service
+    bot_metrics_port: 9101
+    worker_metrics_port: 9102
+    postgres_port: 5432
+    postgres_db: tea_party_prod
+    postgres_user: tea_party_prod
+    postgres_backup_password: "{{ vault_postgres_prod_backup_password }}"

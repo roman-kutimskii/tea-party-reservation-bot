@@ -66,19 +66,19 @@ jobs:
       - name: Copy deployment assets
         uses: appleboy/scp-action@v0.1.7
         with:
-          host: ${{ secrets.STAGE_SSH_HOST }}
-          username: ${{ secrets.STAGE_SSH_USER }}
-          key: ${{ secrets.STAGE_SSH_KEY }}
+          host: ${{ secrets.APP_SSH_HOST }}
+          username: ${{ secrets.APP_SSH_USER }}
+          key: ${{ secrets.APP_SSH_KEY }}
           source: deploy/compose/*
           target: ${{ secrets.STAGE_DEPLOY_PATH }}
           strip_components: 2
 
-      - name: Deploy on stage host
+      - name: Deploy on host
         uses: appleboy/ssh-action@v1.2.0
         with:
-          host: ${{ secrets.STAGE_SSH_HOST }}
-          username: ${{ secrets.STAGE_SSH_USER }}
-          key: ${{ secrets.STAGE_SSH_KEY }}
+          host: ${{ secrets.APP_SSH_HOST }}
+          username: ${{ secrets.APP_SSH_USER }}
+          key: ${{ secrets.APP_SSH_KEY }}
           script: |
             set -eu
             export APP_IMAGE='${{ needs.build-and-publish.outputs.image_ref }}'
@@ -91,9 +91,9 @@ jobs:
       - name: Stage smoke check
         uses: appleboy/ssh-action@v1.2.0
         with:
-          host: ${{ secrets.STAGE_SSH_HOST }}
-          username: ${{ secrets.STAGE_SSH_USER }}
-          key: ${{ secrets.STAGE_SSH_KEY }}
+          host: ${{ secrets.APP_SSH_HOST }}
+          username: ${{ secrets.APP_SSH_USER }}
+          key: ${{ secrets.APP_SSH_KEY }}
           script: |
             set -eu
             cd '${{ secrets.STAGE_DEPLOY_PATH }}'

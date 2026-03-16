@@ -5,34 +5,36 @@
       - prometheus-node-exporter
     state: present
 
-- name: Create monitoring state directory
+- name: Create monitoring state directory for each environment
   ansible.builtin.file:
-    path: /var/lib/tea-party-monitoring
+    path: "/var/lib/tea-party-monitoring/{{ item.key }}"
     state: directory
     owner: root
     group: root
     mode: '0755'
+  loop: "{{ app_environments | dict2items }}"
 
-- name: Install monitoring environment file
+- name: Install monitoring environment file for each environment
   ansible.builtin.copy:
-    dest: /etc/tea-party-monitoring.env
+    dest: "/etc/tea-party-monitoring-{{ item.key }}.env"
     owner: root
     group: root
     mode: '0600'
     content: |
-      APP_ENVIRONMENT={{ group_names | intersect(['stage', 'prod']) | first | default('prod') }}
+      APP_ENVIRONMENT={{ item.key }}
       RUNTIME_HOST={{ monitoring_runtime_host }}
-      BOT_METRICS_PORT={{ monitoring_bot_metrics_port }}
-      WORKER_METRICS_PORT={{ monitoring_worker_metrics_port }}
+      BOT_METRICS_PORT={{ item.value.bot_metrics_port }}
+      WORKER_METRICS_PORT={{ item.value.worker_metrics_port }}
       UPTIME_PING_URL={{ monitoring_uptime_ping_url }}
       ALERT_WEBHOOK_URL={{ monitoring_alert_webhook_url }}
-      COMPOSE_DIR={{ compose_dir }}
-      COMPOSE_OVERRIDE_FILE=compose.{{ group_names | intersect(['stage', 'prod']) | first | default('prod') }}.yml
+      COMPOSE_DIR={{ item.value.compose_dir }}
+      COMPOSE_OVERRIDE_FILE={{ item.value.compose_override }}
       ERROR_LOOKBACK_MINUTES={{ monitoring_error_lookback_minutes }}
       ERROR_BURST_THRESHOLD={{ monitoring_error_burst_threshold }}
-      STATE_DIR=/var/lib/tea-party-monitoring
+      STATE_DIR=/var/lib/tea-party-monitoring/{{ item.key }}
+  loop: "{{ app_environments | dict2items }}"
 
-- name: Install monitoring probe script
+- name: Install monitoring probe script (shared)
   ansible.builtin.copy:
     dest: /usr/local/bin/tea-party-monitoring-check.sh
     owner: root
@@ -42,7 +44,8 @@
       #!/bin/sh
       set -eu
 
-      . /etc/tea-party-monitoring.env
+      ENV_FILE="${1:?usage: tea-party-monitoring-check.sh <env-file>}"
+      . "$ENV_FILE"
 
       READY_STATE_FILE="${STATE_DIR}/readyz-down"
       ERROR_STATE_FILE="${STATE_DIR}/error-burst-window"
@@ -101,32 +104,32 @@
 
       check_error_burst
 
-- name: Install monitoring probe service
+- name: Install monitoring probe service for each environment
   ansible.builtin.copy:
-    dest: /etc/systemd/system/tea-party-monitoring-check.service
+    dest: "/etc/systemd/system/tea-party-monitoring-check-{{ item.key }}.service"
     owner: root
     group: root
     mode: '0644'
     content: |
       [Unit]
-      Description=Tea Party uptime and error probe
+      Description=Tea Party uptime and error probe ({{ item.key }})
       After=network-online.target docker.service
 
       [Service]
       Type=oneshot
-      EnvironmentFile=/etc/tea-party-monitoring.env
-      ExecStart=/usr/local/bin/tea-party-monitoring-check.sh
+      ExecStart=/usr/local/bin/tea-party-monitoring-check.sh /etc/tea-party-monitoring-{{ item.key }}.env
+  loop: "{{ app_environments | dict2items }}"
   notify: Reload systemd
 
-- name: Install monitoring probe timer
+- name: Install monitoring probe timer for each environment
   ansible.builtin.copy:
-    dest: /etc/systemd/system/tea-party-monitoring-check.timer
+    dest: "/etc/systemd/system/tea-party-monitoring-check-{{ item.key }}.timer"
     owner: root
     group: root
     mode: '0644'
     content: |
       [Unit]
-      Description=Run Tea Party uptime and error probe
+      Description=Run Tea Party uptime and error probe ({{ item.key }})
 
       [Timer]
       OnBootSec=2m
@@ -135,6 +138,7 @@
 
       [Install]
       WantedBy=timers.target
+  loop: "{{ app_environments | dict2items }}"
   notify: Reload systemd
 
 - name: Enable node exporter
@@ -143,11 +147,12 @@
     enabled: true
     state: started
 
-- name: Enable monitoring probe timer
+- name: Enable monitoring probe timer for each environment
   ansible.builtin.service:
-    name: tea-party-monitoring-check.timer
+    name: "tea-party-monitoring-check-{{ item.key }}.timer"
     enabled: true
     state: started
+  loop: "{{ app_environments | dict2items }}"
 
 - name: Allow node exporter from monitoring CIDRs
   community.general.ufw:

@@ -16,11 +16,6 @@ variable "project_name" {
   default     = "tea-party-reservation-bot"
 }
 
-variable "environment" {
-  type        = string
-  description = "Deployment environment name."
-}
-
 variable "region_slug" {
   type        = string
   description = "Reg.cloud region slug."
@@ -29,8 +24,8 @@ variable "region_slug" {
 
 variable "server_size" {
   type        = string
-  description = "Reg.cloud server size slug (format: c<cpu>-m<ram>-d<disk>-<tier>)."
-  default     = "c2-m4-d40-hp"
+  description = "Reg.cloud server size slug (format: c<cpu>-m<ram>-d<disk>-<tier>). Must be large enough to host both stage and prod stacks."
+  default     = "c4-m8-d80-hp"
 }
 
 variable "server_image" {
@@ -69,7 +64,7 @@ variable "enable_public_web_ports" {
 
 variable "volume_mount_path" {
   type        = string
-  description = "Mount path for application data on the server disk."
+  description = "Root data directory created on the server disk."
   default     = "/srv/tea-party-reservation-bot"
 }
 

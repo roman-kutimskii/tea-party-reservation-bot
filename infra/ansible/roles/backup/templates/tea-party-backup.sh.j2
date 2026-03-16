@@ -2,7 +2,7 @@
 set -eu
 
 STAMP="$(date +%Y%m%d-%H%M%S)"
-BACKUP_DIR="{{ backup_root }}"
+BACKUP_DIR="{{ backup_root }}/{{ env_name }}"
 DUMP_FILE="${BACKUP_DIR}/postgres-${STAMP}.dump"
 
 notify_alert() {

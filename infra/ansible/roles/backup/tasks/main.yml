@@ -1,55 +1,66 @@
-- name: Install backup environment file
+- name: Install backup environment file for each environment
   ansible.builtin.template:
     src: backup.env.j2
-    dest: /etc/tea-party-backup.env
+    dest: "/etc/tea-party-backup-{{ item.key }}.env"
     owner: root
     group: root
     mode: '0600'
+  vars:
+    env_name: "{{ item.key }}"
+    env_cfg: "{{ item.value }}"
+  loop: "{{ app_environments | dict2items }}"
 
-- name: Install backup script
+- name: Install backup script for each environment
   ansible.builtin.template:
     src: tea-party-backup.sh.j2
-    dest: /usr/local/bin/tea-party-backup.sh
+    dest: "/usr/local/bin/tea-party-backup-{{ item.key }}.sh"
     owner: root
     group: root
     mode: '0750'
+  vars:
+    env_name: "{{ item.key }}"
+    env_cfg: "{{ item.value }}"
+  loop: "{{ app_environments | dict2items }}"
 
-- name: Install backup systemd service
+- name: Install backup systemd service for each environment
   ansible.builtin.copy:
-    dest: /etc/systemd/system/tea-party-backup.service
+    dest: "/etc/systemd/system/tea-party-backup-{{ item.key }}.service"
     mode: '0644'
     content: |
       [Unit]
-      Description=Tea Party PostgreSQL backup
+      Description=Tea Party PostgreSQL backup ({{ item.key }})
       After=network-online.target docker.service
 
       [Service]
       Type=oneshot
-      EnvironmentFile=/etc/tea-party-backup.env
-      ExecStart=/usr/local/bin/tea-party-backup.sh
+      EnvironmentFile=/etc/tea-party-backup-{{ item.key }}.env
+      ExecStart=/usr/local/bin/tea-party-backup-{{ item.key }}.sh
 
       [Install]
       WantedBy=multi-user.target
+  loop: "{{ app_environments | dict2items }}"
   notify: Reload systemd
 
-- name: Install backup timer
+- name: Install backup timer for each environment
   ansible.builtin.copy:
-    dest: /etc/systemd/system/tea-party-backup.timer
+    dest: "/etc/systemd/system/tea-party-backup-{{ item.0.key }}.timer"
     mode: '0644'
     content: |
       [Unit]
-      Description=Run Tea Party backup every day
+      Description=Run Tea Party backup ({{ item.0.key }}) every day
 
       [Timer]
-      OnCalendar=*-*-* 03:30:00
+      OnCalendar=*-*-* {{ item.1 }}:00
       Persistent=true
 
       [Install]
       WantedBy=timers.target
+  loop: "{{ app_environments | dict2items | zip(['03:00', '03:30']) | list }}"
   notify: Reload systemd
 
-- name: Ensure backup timer is enabled
+- name: Ensure backup timer is enabled for each environment
   ansible.builtin.service:
-    name: tea-party-backup.timer
+    name: "tea-party-backup-{{ item.key }}.timer"
     enabled: true
     state: started
+  loop: "{{ app_environments | dict2items }}"
