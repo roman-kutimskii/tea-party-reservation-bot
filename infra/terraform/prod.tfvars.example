@@ -1,7 +1,6 @@
-environment = "prod"
-location    = "fsn1"
-server_type = "cpx31"
-volume_size_gb = 80
+environment  = "prod"
+region_slug  = "openstack-msk1"
+server_size  = "c4-m8-d80-hp"
 
 ssh_allowed_cidrs = [
   "203.0.113.10/32",

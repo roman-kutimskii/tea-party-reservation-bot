@@ -1,6 +1,6 @@
-environment = "stage"
-location    = "fsn1"
-server_type = "cpx21"
+environment  = "stage"
+region_slug  = "openstack-msk1"
+server_size  = "c2-m4-d40-hp"
 
 ssh_allowed_cidrs = [
   "203.0.113.10/32",

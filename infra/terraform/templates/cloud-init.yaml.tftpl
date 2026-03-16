@@ -4,25 +4,7 @@ package_upgrade: true
 timezone: ${timezone}
 
 packages:
-  - qemu-guest-agent
   - fail2ban
 
-write_files:
-  - path: /usr/local/bin/mount-app-volume.sh
-    permissions: '0755'
-    owner: root:root
-    content: |
-      #!/bin/sh
-      set -eu
-      DEVICE="/dev/disk/by-id/scsi-0HC_Volume_${volume_name}"
-      TARGET="${volume_mount_path}"
-      mkdir -p "$TARGET"
-      if ! blkid "$DEVICE" >/dev/null 2>&1; then
-        mkfs.ext4 -F "$DEVICE"
-      fi
-      grep -q "$DEVICE" /etc/fstab || printf '%s %s ext4 defaults,nofail,discard 0 2\n' "$DEVICE" "$TARGET" >> /etc/fstab
-      mount -a
-
 runcmd:
-  - systemctl enable --now qemu-guest-agent
-  - /usr/local/bin/mount-app-volume.sh
+  - mkdir -p ${volume_mount_path}

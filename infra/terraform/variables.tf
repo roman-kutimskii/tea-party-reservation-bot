@@ -1,3 +1,15 @@
+variable "token" {
+  type        = string
+  description = "Reg.cloud API token."
+  sensitive   = true
+}
+
+variable "api_url" {
+  type        = string
+  description = "Reg.cloud API endpoint."
+  default     = "https://api.cloudvps.reg.ru"
+}
+
 variable "project_name" {
   type        = string
   description = "Project name used in resource names."
@@ -9,51 +21,33 @@ variable "environment" {
   description = "Deployment environment name."
 }
 
-variable "location" {
+variable "region_slug" {
   type        = string
-  description = "Hetzner Cloud location."
-  default     = "fsn1"
+  description = "Reg.cloud region slug."
+  default     = "openstack-msk1"
 }
 
-variable "server_type" {
+variable "server_size" {
   type        = string
-  description = "Hetzner server type."
-  default     = "cpx21"
+  description = "Reg.cloud server size slug (format: c<cpu>-m<ram>-d<disk>-<tier>)."
+  default     = "c2-m4-d40-hp"
 }
 
 variable "server_image" {
   type        = string
-  description = "Server image slug."
-  default     = "ubuntu-24.04"
+  description = "Server OS image slug."
+  default     = "ubuntu-24-04-amd64"
 }
 
 variable "server_backups_enabled" {
   type        = bool
-  description = "Enable Hetzner server backups."
+  description = "Enable automatic server backups."
   default     = true
-}
-
-variable "server_backup_window" {
-  type        = string
-  description = "Preferred Hetzner backup window."
-  default     = "22-02"
-}
-
-variable "volume_size_gb" {
-  type        = number
-  description = "Persistent data volume size in GB."
-  default     = 40
-}
-
-variable "volume_mount_path" {
-  type        = string
-  description = "Mount path for the attached volume."
-  default     = "/srv/tea-party-reservation-bot"
 }
 
 variable "ssh_public_keys" {
   type        = map(string)
-  description = "SSH public keys to register in Hetzner Cloud."
+  description = "SSH public keys to register in Reg.cloud (map of name => public key string)."
 }
 
 variable "ssh_allowed_cidrs" {
@@ -63,18 +57,24 @@ variable "ssh_allowed_cidrs" {
 
 variable "monitoring_allowed_cidrs" {
   type        = list(string)
-  description = "CIDR blocks allowed to scrape node exporter."
+  description = "CIDR blocks allowed to scrape node exporter (informational — enforced by UFW via Ansible)."
   default     = []
 }
 
 variable "enable_public_web_ports" {
   type        = bool
-  description = "Open 80/443 for future webhook or reverse proxy use."
+  description = "Open 80/443 for future webhook or reverse proxy use (informational — enforced by UFW via Ansible)."
   default     = false
+}
+
+variable "volume_mount_path" {
+  type        = string
+  description = "Mount path for application data on the server disk."
+  default     = "/srv/tea-party-reservation-bot"
 }
 
 variable "labels" {
   type        = map(string)
-  description = "Extra labels applied to resources."
+  description = "Extra metadata tags applied to resources where supported."
   default     = {}
 }
