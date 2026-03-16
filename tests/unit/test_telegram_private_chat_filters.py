@@ -62,7 +62,7 @@ def _build_dispatcher() -> tuple[Bot, Dispatcher]:
 async def test_bot_ignores_group_messages() -> None:
     bot, dispatcher = _build_dispatcher()
     mock_send = AsyncMock()
-    setattr(bot, "send_message", mock_send)
+    bot.send_message = mock_send  # type: ignore[method-assign]
 
     update = Update(update_id=1, message=_build_message(chat_type="group", text="/help"))
     await dispatcher.feed_update(bot, update)
@@ -75,7 +75,7 @@ async def test_bot_ignores_group_messages() -> None:
 async def test_bot_replies_in_private_chat() -> None:
     bot, dispatcher = _build_dispatcher()
     mock_make_request = AsyncMock(return_value=None)
-    setattr(bot.session, "make_request", mock_make_request)
+    bot.session.make_request = mock_make_request  # type: ignore[method-assign]
 
     update = Update(update_id=1, message=_build_message(chat_type="private", text="/help"))
     await dispatcher.feed_update(bot, update)
@@ -88,7 +88,7 @@ async def test_bot_replies_in_private_chat() -> None:
 async def test_bot_ignores_group_callbacks() -> None:
     bot, dispatcher = _build_dispatcher()
     mock_answer = AsyncMock()
-    setattr(bot, "answer_callback_query", mock_answer)
+    bot.answer_callback_query = mock_answer  # type: ignore[method-assign]
 
     update = Update(update_id=1, callback_query=_build_callback(chat_type="group", data="noop"))
     await dispatcher.feed_update(bot, update)
