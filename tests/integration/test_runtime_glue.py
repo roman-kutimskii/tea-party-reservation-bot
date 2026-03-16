@@ -95,7 +95,7 @@ class FakeGroupPublisher:
             self.fail_send_times -= 1
             raise RuntimeError("send failed")
         self.messages.append((chat_id, payload.text))
-        return cast(Any, FakeMessage(chat=FakeChat(chat_id), message_id=777))
+        return cast(Message, FakeMessage(chat=FakeChat(chat_id), message_id=777))
 
     async def delete_group_post(self, *, chat_id: int, message_id: int) -> bool:
         if self.fail_after_send_times > 0:
@@ -115,7 +115,7 @@ class FakeGroupPublisher:
             self.fail_edit_times -= 1
             raise RuntimeError("edit failed")
         self.edited_messages.append((chat_id, message_id, payload.text))
-        return cast(Any, FakeMessage(chat=FakeChat(chat_id), message_id=message_id))
+        return cast(Message, FakeMessage(chat=FakeChat(chat_id), message_id=message_id))
 
 
 @dataclass(slots=True)
@@ -125,7 +125,7 @@ class FakeNotifier:
     async def send_direct_message(self, *, telegram_user_id: int, text: str) -> Message:
         self.messages.append((telegram_user_id, text))
         return cast(
-            Any,
+            Message,
             FakeMessage(chat=FakeChat(telegram_user_id), message_id=len(self.messages)),
         )
 

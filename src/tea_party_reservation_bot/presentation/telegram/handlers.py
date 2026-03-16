@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import cast
 
 from aiogram import F, Router
 from aiogram.enums import ChatType
@@ -247,8 +246,7 @@ def _register_public_callback_handlers(router: Router, deps: TelegramHandlerDepe
         user = callback.from_user
         settings = await deps.application_service.toggle_notifications(telegram_user_id=user.id)
         if isinstance(callback.message, Message):
-            message = cast(Message, callback.message)
-            await message.edit_text(
+            await callback.message.edit_text(
                 render_notifications(settings),
                 reply_markup=notifications_keyboard(settings.enabled),
             )
@@ -262,12 +260,11 @@ def _register_public_callback_handlers(router: Router, deps: TelegramHandlerDepe
             return
         event = await deps.application_service.get_event(event_id)
         if isinstance(callback.message, Message):
-            message = cast(Message, callback.message)
             if event is None:
                 await callback.answer("Событие не найдено или уже недоступно.", show_alert=True)
                 return
             else:
-                await message.edit_text(
+                await callback.message.edit_text(
                     render_event_details(event),
                     reply_markup=event_actions_keyboard(event),
                 )
@@ -311,8 +308,7 @@ def _register_registration_handlers(
             await callback.answer(_INVALID_CALLBACK_TEXT, show_alert=True)
             return
         if isinstance(callback.message, Message):
-            message = cast(Message, callback.message)
-            await message.edit_reply_markup(
+            await callback.message.edit_reply_markup(
                 reply_markup=cancellation_confirm_keyboard(registration_id)
             )
         await callback.answer()
@@ -673,8 +669,7 @@ def _register_admin_event_handlers(  # noqa: PLR0915
             await callback.answer(message, show_alert=True)
             return
         if isinstance(callback.message, Message) and roster is not None:
-            message = cast(Message, callback.message)
-            await message.edit_text(
+            await callback.message.edit_text(
                 render_roster(roster),
                 reply_markup=roster_actions_keyboard(roster),
             )

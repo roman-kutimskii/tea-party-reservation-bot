@@ -12,7 +12,7 @@ from alembic import command
 from alembic.config import Config
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
-from testcontainers.postgres import PostgresContainer
+from testcontainers.postgres import PostgresContainer  # type: ignore[import-untyped]
 
 from tea_party_reservation_bot.application.contracts import UnitOfWork
 from tea_party_reservation_bot.application.dto import TelegramProfile
@@ -37,12 +37,12 @@ from tea_party_reservation_bot.infrastructure.db.uow import SqlAlchemyUnitOfWork
 
 
 def _async_dsn(container: PostgresContainer) -> str:
-    dsn = container.get_connection_url()
+    dsn: str = container.get_connection_url()
     return dsn.replace("+psycopg2", "+psycopg")
 
 
 @pytest.fixture(scope="session")
-def event_loop_policy():
+def event_loop_policy() -> object:
     if sys.platform != "win32":
         return asyncio.get_event_loop_policy()
     with warnings.catch_warnings():

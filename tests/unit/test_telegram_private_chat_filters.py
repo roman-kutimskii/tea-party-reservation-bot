@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import AsyncMock
 
 import pytest
 from aiogram import Bot, Dispatcher
 from aiogram.types import CallbackQuery, Chat, Message, Update, User
 
+from tea_party_reservation_bot.application.telegram import TelegramBotApplicationService
 from tea_party_reservation_bot.infrastructure.telegram.publication import (
     TelegramPublicationRenderer,
 )
@@ -40,7 +42,9 @@ def _build_callback(*, chat_type: str, data: str) -> CallbackQuery:
 
 def _build_dispatcher() -> tuple[Bot, Dispatcher]:
     bot = Bot(token="123456:TEST")  # noqa: S106
-    application_service = SimpleNamespace(sync_profile=AsyncMock())
+    application_service = cast(
+        TelegramBotApplicationService, SimpleNamespace(sync_profile=AsyncMock())
+    )
     dispatcher = Dispatcher()
     dispatcher.include_router(
         build_router(
@@ -57,34 +61,37 @@ def _build_dispatcher() -> tuple[Bot, Dispatcher]:
 @pytest.mark.asyncio
 async def test_bot_ignores_group_messages() -> None:
     bot, dispatcher = _build_dispatcher()
-    bot.send_message = AsyncMock()
+    mock_send = AsyncMock()
+    setattr(bot, "send_message", mock_send)
 
     update = Update(update_id=1, message=_build_message(chat_type="group", text="/help"))
     await dispatcher.feed_update(bot, update)
 
-    bot.send_message.assert_not_awaited()
+    mock_send.assert_not_awaited()
     await bot.session.close()
 
 
 @pytest.mark.asyncio
 async def test_bot_replies_in_private_chat() -> None:
     bot, dispatcher = _build_dispatcher()
-    bot.session.make_request = AsyncMock(return_value=None)
+    mock_make_request = AsyncMock(return_value=None)
+    setattr(bot.session, "make_request", mock_make_request)
 
     update = Update(update_id=1, message=_build_message(chat_type="private", text="/help"))
     await dispatcher.feed_update(bot, update)
 
-    bot.session.make_request.assert_awaited_once()
+    mock_make_request.assert_awaited_once()
     await bot.session.close()
 
 
 @pytest.mark.asyncio
 async def test_bot_ignores_group_callbacks() -> None:
     bot, dispatcher = _build_dispatcher()
-    bot.answer_callback_query = AsyncMock()
+    mock_answer = AsyncMock()
+    setattr(bot, "answer_callback_query", mock_answer)
 
     update = Update(update_id=1, callback_query=_build_callback(chat_type="group", data="noop"))
     await dispatcher.feed_update(bot, update)
 
-    bot.answer_callback_query.assert_not_awaited()
+    mock_answer.assert_not_awaited()
     await bot.session.close()

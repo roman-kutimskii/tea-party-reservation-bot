@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
-from tea_party_reservation_bot.application.services import CancellationResult
+from tea_party_reservation_bot.application.services import (
+    AdminEventService,
+    CancellationResult,
+    RegistrationService,
+)
 from tea_party_reservation_bot.domain.rbac import Actor, RoleSet
 from tea_party_reservation_bot.infrastructure.telegram.backends import (
     SqlAlchemyAdminEventCommandPort,
@@ -33,8 +37,8 @@ class FakeRegistrationService:
 async def test_admin_event_command_port_uses_override_for_operational_cancellation() -> None:
     registration_service = FakeRegistrationService()
     port = SqlAlchemyAdminEventCommandPort(
-        service=object(),
-        registration_service=registration_service,
+        service=cast(AdminEventService, object()),
+        registration_service=cast(RegistrationService, registration_service),
         timezone=load_timezone("Europe/Moscow"),
     )
     actor = Actor(telegram_user_id=1000, roles=RoleSet(frozenset()))
