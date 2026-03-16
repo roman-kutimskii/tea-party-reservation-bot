@@ -16,12 +16,6 @@ build/
 deploy/compose/env/*.env
 !deploy/compose/env/*.env.example
 
-infra/terraform/.terraform/
-infra/terraform/.terraform.lock.hcl
-infra/terraform/*.tfstate
-infra/terraform/*.tfstate.*
-infra/terraform/*.tfplan
-
 infra/ansible/*.retry
 ops/backups/
 

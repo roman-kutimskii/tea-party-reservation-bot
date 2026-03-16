@@ -88,7 +88,6 @@ The GitHub Actions workflows expect:
 ## Secrets handling
 
 - keep `deploy/compose/env/*.env` on the server, not in git
-- keep Terraform provider tokens in shell environment or secret manager
 - use GitHub environment secrets for GHCR, SSH keys, and deployment hosts
 - keep Ansible secrets in vault-backed variables such as `vault_restic_password`
 - do not leave `ufw_allowed_ssh_cidrs` open to `0.0.0.0/0` outside temporary break-glass access
@@ -99,7 +98,6 @@ The GitHub Actions workflows expect:
 - restic copy to off-VPS object storage
 - optional backup heartbeat ping via `backup_healthcheck_url`
 - backup failures and runtime incidents can post to `monitoring_alert_webhook_url`
-- Hetzner server backups enabled at infrastructure layer
 - monthly restore drill using `ops/runbooks/restore.md`
 
 ## Monitoring wiring
