@@ -17,6 +17,9 @@ deploy/compose/env/*.env
 !deploy/compose/env/*.env.example
 
 infra/ansible/*.retry
+infra/ansible/inventory/hosts.ini
+infra/ansible/group_vars/vault.yml
+infra/terraform/*.tfvars
 ops/backups/
 
 .DS_Store

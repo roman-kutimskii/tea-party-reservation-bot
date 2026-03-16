@@ -4,7 +4,7 @@ deploy_group: deploy
 deploy_root: /opt/tea-party-reservation-bot
 backup_root: /srv/tea-party-reservation-bot/backups
 ufw_allowed_ssh_cidrs:
-  - 203.0.113.0/24
+  - 0.0.0.0/0
 monitoring_allowed_cidrs: []
 monitoring_runtime_host: 127.0.0.1
 monitoring_check_interval_minutes: 5
