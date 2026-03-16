@@ -26,7 +26,7 @@ jobs:
       name: prod
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6.0.2
 
       - name: Resolve image reference
         id: image
@@ -34,11 +34,11 @@ jobs:
           if [ '${{ github.event_name }}' = 'workflow_dispatch' ]; then
             echo 'ref=${{ inputs.image_ref }}' >> "$GITHUB_OUTPUT"
           else
-            echo 'ref=ghcr.io/${{ github.repository }}:${{ github.event.release.tag_name }}' >> "$GITHUB_OUTPUT"
+            echo 'ref=ghcr.io/${{ github.repository }}:${{ github.sha }}' >> "$GITHUB_OUTPUT"
           fi
 
       - name: Copy deployment assets
-        uses: appleboy/scp-action@v0.1.7
+        uses: appleboy/scp-action@v1.0.0
         with:
           host: ${{ secrets.APP_SSH_HOST }}
           username: ${{ secrets.APP_SSH_USER }}
@@ -48,7 +48,7 @@ jobs:
           strip_components: 2
 
       - name: Deploy on host
-        uses: appleboy/ssh-action@v1.2.0
+        uses: appleboy/ssh-action@v1.2.5
         with:
           host: ${{ secrets.APP_SSH_HOST }}
           username: ${{ secrets.APP_SSH_USER }}
@@ -64,7 +64,7 @@ jobs:
             docker image prune -f
 
       - name: Prod smoke check
-        uses: appleboy/ssh-action@v1.2.0
+        uses: appleboy/ssh-action@v1.2.5
         with:
           host: ${{ secrets.APP_SSH_HOST }}
           username: ${{ secrets.APP_SSH_USER }}
@@ -73,6 +73,8 @@ jobs:
             set -eu
             cd '${{ secrets.PROD_DEPLOY_PATH }}'
             docker compose -f compose.yml -f compose.prod.yml ps
+            curl -fsS http://127.0.0.1:9101/readyz
+            curl -fsS http://127.0.0.1:9102/readyz
 
       - name: Send deployment notification
         if: always()

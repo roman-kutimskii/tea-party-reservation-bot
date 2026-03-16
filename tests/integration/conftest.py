@@ -57,7 +57,7 @@ def event_loop_policy() -> object:
 
 @pytest.fixture(scope="session")
 def postgres_dsn() -> Iterator[str]:
-    with PostgresContainer("postgres:16-alpine") as container:
+    with PostgresContainer("postgres:17-alpine") as container:
         yield _async_dsn(container)
 
 

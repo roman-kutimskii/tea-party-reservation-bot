@@ -13,43 +13,19 @@ permissions:
 jobs:
   quality:
     runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:17
-        env:
-          POSTGRES_DB: tea_party_test
-          POSTGRES_USER: tea_party
-          POSTGRES_PASSWORD: tea_party
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd="pg_isready -U tea_party -d tea_party_test"
-          --health-interval=10s
-          --health-timeout=5s
-          --health-retries=5
-    env:
-      DATABASE_URL: postgresql+psycopg://tea_party:tea_party@127.0.0.1:5432/tea_party_test
-      APP_ENV: ci
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6.0.2
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6.2.0
         with:
           python-version: '3.14'
 
       - name: Set up uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v7.6.0
         with:
-          version: '0.10.9'
-
-      - name: Verify Python project files exist
-        run: |
-          if [ ! -f pyproject.toml ]; then
-            echo 'pyproject.toml is missing; application package hooks are not wired yet.' >&2
-            exit 1
-          fi
+          version: '0.10.10'
 
       - name: Install dependencies
         run: uv sync --frozen --all-extras --dev
@@ -73,26 +49,26 @@ jobs:
         run: docker build --tag tea-party-reservation-bot:ci .
 
       - name: Secret scan
-        uses: gitleaks/gitleaks-action@v2
+        uses: gitleaks/gitleaks-action@v2.3.9
         env:
-          GITHUB_TOKEN: ${{ secrets.TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
 
       - name: Filesystem vulnerability scan
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@0.35.0
         with:
           scan-type: fs
           scan-ref: .
           format: sarif
           output: trivy-fs.sarif
-          github-pat: ${{ secrets.TOKEN }}
+          github-pat: ${{ github.token }}
 
       - name: Upload Trivy results
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4.33.0
         with:
           sarif_file: trivy-fs.sarif
 
       - name: Image vulnerability scan
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@0.35.0
         with:
           image-ref: tea-party-reservation-bot:ci
           format: table
@@ -100,4 +76,4 @@ jobs:
           ignore-unfixed: true
           vuln-type: 'os,library'
           severity: 'CRITICAL,HIGH'
-          github-pat: ${{ secrets.TOKEN }}
+          github-pat: ${{ github.token }}

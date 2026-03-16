@@ -15,7 +15,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends build-essential curl libpq-dev postgresql-client \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=ghcr.io/astral-sh/uv:0.7.22 /uv /uvx /usr/local/bin/
+COPY --from=ghcr.io/astral-sh/uv:0.10.10 /uv /uvx /usr/local/bin/
 
 RUN python -m venv /opt/venv
 
