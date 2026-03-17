@@ -101,8 +101,17 @@ jobs:
             set -eu
             cd '${{ secrets.STAGE_DEPLOY_PATH }}'
             docker compose --env-file ../env/stage.env --env-file ../env/stage.secrets.env -f compose.yml -f compose.stage.yml ps
-            curl -fsS http://127.0.0.1:9111/readyz
-            curl -fsS http://127.0.0.1:9112/readyz
+            for url in http://127.0.0.1:9111/readyz http://127.0.0.1:9112/readyz; do
+              for attempt in 1 2 3 4 5 6 7 8 9 10 11 12; do
+                if curl -fsS "$url"; then
+                  break
+                fi
+                if [ "$attempt" -eq 12 ]; then
+                  exit 1
+                fi
+                sleep 5
+              done
+            done
 
       - name: Send deployment notification
         if: always()
