@@ -40,6 +40,29 @@
     shell: /bin/bash
     create_home: true
 
+- name: Check for root authorized_keys
+  ansible.builtin.stat:
+    path: /root/.ssh/authorized_keys
+  register: root_authorized_keys
+
+- name: Create deploy SSH directory
+  ansible.builtin.file:
+    path: "/home/{{ deploy_user }}/.ssh"
+    state: directory
+    owner: "{{ deploy_user }}"
+    group: "{{ deploy_group }}"
+    mode: '0700'
+
+- name: Copy root authorized_keys to deploy user
+  ansible.builtin.copy:
+    src: /root/.ssh/authorized_keys
+    dest: "/home/{{ deploy_user }}/.ssh/authorized_keys"
+    remote_src: true
+    owner: "{{ deploy_user }}"
+    group: "{{ deploy_group }}"
+    mode: '0600'
+  when: root_authorized_keys.stat.exists
+
 - name: Create deploy root and shared backup directory
   ansible.builtin.file:
     path: "{{ item }}"
