@@ -86,9 +86,9 @@ jobs:
             cd '${{ secrets.STAGE_DEPLOY_PATH }}'
             test -f ../env/stage.env
             test -f ../env/stage.secrets.env
-            docker compose -f compose.yml -f compose.stage.yml pull
-            docker compose -f compose.yml -f compose.stage.yml run --rm -e APP_MIGRATE_ON_START=1 bot true
-            docker compose -f compose.yml -f compose.stage.yml up -d --remove-orphans
+            docker compose --env-file ../env/stage.env --env-file ../env/stage.secrets.env -f compose.yml -f compose.stage.yml pull
+            docker compose --env-file ../env/stage.env --env-file ../env/stage.secrets.env -f compose.yml -f compose.stage.yml run --rm -e APP_MIGRATE_ON_START=1 bot true
+            docker compose --env-file ../env/stage.env --env-file ../env/stage.secrets.env -f compose.yml -f compose.stage.yml up -d --remove-orphans
             docker image prune -f
 
       - name: Stage smoke check
@@ -100,7 +100,7 @@ jobs:
           script: |
             set -eu
             cd '${{ secrets.STAGE_DEPLOY_PATH }}'
-            docker compose -f compose.yml -f compose.stage.yml ps
+            docker compose --env-file ../env/stage.env --env-file ../env/stage.secrets.env -f compose.yml -f compose.stage.yml ps
             curl -fsS http://127.0.0.1:9111/readyz
             curl -fsS http://127.0.0.1:9112/readyz
 

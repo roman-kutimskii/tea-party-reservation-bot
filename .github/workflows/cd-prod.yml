@@ -60,9 +60,9 @@ jobs:
             cd '${{ secrets.PROD_DEPLOY_PATH }}'
             test -f ../env/prod.env
             test -f ../env/prod.secrets.env
-            docker compose -f compose.yml -f compose.prod.yml pull
-            docker compose -f compose.yml -f compose.prod.yml run --rm -e APP_MIGRATE_ON_START=1 bot true
-            docker compose -f compose.yml -f compose.prod.yml up -d --remove-orphans
+            docker compose --env-file ../env/prod.env --env-file ../env/prod.secrets.env -f compose.yml -f compose.prod.yml pull
+            docker compose --env-file ../env/prod.env --env-file ../env/prod.secrets.env -f compose.yml -f compose.prod.yml run --rm -e APP_MIGRATE_ON_START=1 bot true
+            docker compose --env-file ../env/prod.env --env-file ../env/prod.secrets.env -f compose.yml -f compose.prod.yml up -d --remove-orphans
             docker image prune -f
 
       - name: Prod smoke check
@@ -74,7 +74,7 @@ jobs:
           script: |
             set -eu
             cd '${{ secrets.PROD_DEPLOY_PATH }}'
-            docker compose -f compose.yml -f compose.prod.yml ps
+            docker compose --env-file ../env/prod.env --env-file ../env/prod.secrets.env -f compose.yml -f compose.prod.yml ps
             curl -fsS http://127.0.0.1:9101/readyz
             curl -fsS http://127.0.0.1:9102/readyz
 
