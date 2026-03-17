@@ -84,6 +84,8 @@ jobs:
             export APP_IMAGE='${{ needs.build-and-publish.outputs.image_ref }}'
             echo '${{ secrets.GITHUB_TOKEN }}' | docker login ghcr.io -u '${{ github.actor }}' --password-stdin
             cd '${{ secrets.STAGE_DEPLOY_PATH }}'
+            test -f ../env/stage.env
+            test -f ../env/stage.secrets.env
             docker compose -f compose.yml -f compose.stage.yml pull
             docker compose -f compose.yml -f compose.stage.yml run --rm -e APP_MIGRATE_ON_START=1 bot true
             docker compose -f compose.yml -f compose.stage.yml up -d --remove-orphans

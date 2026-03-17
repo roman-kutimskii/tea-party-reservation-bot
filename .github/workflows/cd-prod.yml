@@ -58,6 +58,8 @@ jobs:
             export APP_IMAGE='${{ steps.image.outputs.ref }}'
             echo '${{ secrets.GHCR_READ_TOKEN }}' | docker login ghcr.io -u '${{ secrets.GHCR_READ_USER }}' --password-stdin
             cd '${{ secrets.PROD_DEPLOY_PATH }}'
+            test -f ../env/prod.env
+            test -f ../env/prod.secrets.env
             docker compose -f compose.yml -f compose.prod.yml pull
             docker compose -f compose.yml -f compose.prod.yml run --rm -e APP_MIGRATE_ON_START=1 bot true
             docker compose -f compose.yml -f compose.prod.yml up -d --remove-orphans

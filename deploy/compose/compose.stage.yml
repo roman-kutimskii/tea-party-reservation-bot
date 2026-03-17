@@ -2,8 +2,8 @@ services:
   bot:
     pull_policy: always
     env_file:
-      - ./env/stage.env
-      - ./env/stage.secrets.env
+      - ../env/stage.env
+      - ../env/stage.secrets.env
     ports:
       - "127.0.0.1:9111:9101"
     labels:
@@ -12,8 +12,8 @@ services:
   worker:
     pull_policy: always
     env_file:
-      - ./env/stage.env
-      - ./env/stage.secrets.env
+      - ../env/stage.env
+      - ../env/stage.secrets.env
     ports:
       - "127.0.0.1:9112:9102"
     labels:
@@ -21,7 +21,7 @@ services:
 
   postgres:
     env_file:
-      - ./env/stage.env
-      - ./env/stage.secrets.env
+      - ../env/stage.env
+      - ../env/stage.secrets.env
     ports:
       - "127.0.0.1:5433:5432"
